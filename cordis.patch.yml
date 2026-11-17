@@ -1,0 +1,14 @@
+- insert:
+    - id: session-topics
+      name: dsh-session-topics
+      config:
+        summarizer:
+          provider: deepseek-official
+          model: deepseek-flash
+        autoUpdate: true
+        maxTopics: 20
+        assistantExcerptChars: 500
+        language: auto
+        initBackfillCount: 10
+        searchResultLimit: 50
+        semanticCandidateLimit: 100

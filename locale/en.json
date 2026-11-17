@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Session Topics",
+    "description": "Summarizes each session into a navigable topic list in the right sidebar: jump to a topic, return to the latest exchange, continue an old topic, search topics across sessions, and backfill existing sessions after install."
+  }
+}

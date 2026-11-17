@@ -1,0 +1,65 @@
+{
+  "name": "dsh-session-topics",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Session Topics: LLM-organized topic navigation for every DSH conversation — jump to a topic, return to the latest exchange, continue an old thread, and search topics across sessions.",
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "dsh-plugin",
+    "plugin",
+    "topics",
+    "navigation",
+    "outline",
+    "sidebar",
+    "summary"
+  ],
+  "license": "MIT",
+  "author": "weiyuxiang",
+  "homepage": "https://github.com/weiyuxiang/dsh-session-topics#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/weiyuxiang/dsh-session-topics.git"
+  },
+  "icon": "./icon.svg",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "icon.svg",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": "^22.19.0 || >=24.0.0",
+    "dsh": ">=0.2.1-rc.3"
+  },
+  "peerDependencies": {
+    "dsh-better-sidebar": ">=0.32.0"
+  },
+  "peerDependenciesMeta": {
+    "dsh-better-sidebar": {
+      "optional": true
+    }
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-conversation"
+      ]
+    }
+  }
+}
