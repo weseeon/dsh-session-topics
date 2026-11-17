@@ -78,7 +78,7 @@
           "source": {
             "type": "git",
             "url": "https://github.com/weiyuxiang/dsh-session-topics",
-            "commit": "fee04ff"
+            "commit": "5de0558aa937db64b4d173248e782f24ac3bab09"
           },
           "engines": {
             "dsh": ">=0.2.1-rc.3"
