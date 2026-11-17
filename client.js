@@ -7,6 +7,8 @@
  * continue-discussion draft injection, keyword search, LLM semantic search,
  * and cross-session navigation from global search results.
  */
+window.__DSH_TOPICS_BOOT__ = "loaded@" + Date.now();
+console.log("[session-topics] module factory entered");
 window.__ModuleLoader__.load({
 	id: "dsh-session-topics",
 	factory(require) {
@@ -455,6 +457,7 @@ window.__ModuleLoader__.load({
 			// initial load + SSE subscription
 			useEffect(() => {
 				let disposed = false;
+				if (sessionId == null) return undefined;
 				const source = new EventSource(`${ROUTE}events?sessionId=${encodeURIComponent(sessionId)}`);
 				source.onmessage = (event) => {
 					if (disposed) return;
@@ -474,6 +477,7 @@ window.__ModuleLoader__.load({
 						/* malformed frame */
 					}
 				};
+				if (sessionId == null) return;
 				api(`topics?sessionId=${encodeURIComponent(sessionId)}`)
 					.then((data) => {
 						if (disposed) return;
@@ -833,7 +837,7 @@ window.__ModuleLoader__.load({
 		}
 
 		return {
-			inject: { required: ["locale", "sessions", "uiWorkspace"], optional: ["betterSidebar"] },
+			inject: ["locale", "sessions", "uiWorkspace"],
 			apply(ctx) {
 				const t = ctx.locale.bind(NS);
 				ctx.effect(() => ctx.locale.register(NS, dictionaries), "session-topics: dictionaries");
@@ -873,12 +877,19 @@ window.__ModuleLoader__.load({
 
 				// Register as a dsh-better-sidebar page: no auto-open (the user opens it
 				// from the sidebar's + menu or guide), single instance per sidebar.
-				const betterSidebar = ctx.betterSidebar;
-				if (betterSidebar === undefined) {
-					// Standalone mode: no sidebar service, so mount a floating entry button
-					// into the shell root that opens the panel in a drawer.
+				let betterSidebar;
+				try {
+					betterSidebar = ctx.get("betterSidebar");
+				} catch {
+					betterSidebar = undefined;
+				}
+				{
+					// Always mount a floating entry button, whether or not the sidebar
+					// registers a tab: the button is the plugin's own entry, the tab is
+					// only one host surface that may come and go with the sidebar.
 					const host = document.createElement("div");
 					const mount = () => {
+						if (typeof document === "undefined" || !document.body) return;
 						if (!host.isConnected) document.body.appendChild(host);
 					};
 					mount();
@@ -900,7 +911,9 @@ window.__ModuleLoader__.load({
 								window.removeEventListener("hashchange", read);
 							};
 						}, []);
-						if (sessionId === null) return null;
+						// The button stays reachable even before a session id is known:
+						// the panel itself resolves the session lazily, and hiding the
+						// entry on first paint made it look like the plugin had none.
 						return h(
 							React.Fragment,
 							null,
@@ -929,6 +942,10 @@ window.__ModuleLoader__.load({
 						},
 						"session-topics: standalone entry",
 					);
+				}
+
+				if (betterSidebar === undefined) {
+					// No sidebar service: the floating button above is the only entry.
 					return;
 				}
 
