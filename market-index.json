@@ -50,10 +50,10 @@
         "zh": "LLM 把会话整理成可导航的主题列表，显示在右侧栏：跳到主题位置、一键回到最新、从旧主题继续讨论、跨会话关键词与语意搜索。可选依赖 dsh-better-sidebar，未安装时以浮动按钮独立运行。",
         "en": "LLM-organized topic navigation for every DSH conversation: jump to a topic, return to the latest exchange, continue an old thread, and search across sessions. Uses dsh-better-sidebar when present and runs standalone otherwise."
       },
-      "author": "weiyuxiang",
-      "homepage": "https://github.com/weiyuxiang/dsh-session-topics#readme",
+      "author": "weseeon",
+      "homepage": "https://github.com/weseeon/dsh-session-topics#readme",
       "repository": {
-        "url": "https://github.com/weiyuxiang/dsh-session-topics"
+        "url": "https://github.com/weseeon/dsh-session-topics"
       },
       "metadata": {
         "category": "navigation",
@@ -77,7 +77,7 @@
           "publishTimestamp": 1794883836,
           "source": {
             "type": "git",
-            "url": "https://github.com/weiyuxiang/dsh-session-topics",
+            "url": "https://github.com/weseeon/dsh-session-topics",
             "commit": "8df342cca92079dac550ca0334c47650697703cf"
           },
           "engines": {

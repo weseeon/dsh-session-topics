@@ -41,7 +41,7 @@
 2. 切到**发现**标签页，添加索引源：
 
 ```
-https://raw.githubusercontent.com/weiyuxiang/dsh-session-topics/main/market-index.json
+https://raw.githubusercontent.com/weseeon/dsh-session-topics/main/market-index.json
 ```
 
 3. 搜索 `会话主题` 或 `session-topics`，点击安装
@@ -50,7 +50,7 @@ https://raw.githubusercontent.com/weiyuxiang/dsh-session-topics/main/market-inde
 
 ```bash
 # 在 DSH profile 目录下
-pnpm add github:weiyuxiang/dsh-session-topics
+pnpm add github:weseeon/dsh-session-topics
 ```
 
 然后重启 DSH（或重载插件）。
@@ -140,8 +140,8 @@ Long sessions drift across unrelated subjects. This plugin has the model continu
 **Features**: incremental summarization on every `turn/end`; jump via the host's own `session.loadThrough(seq)`; back-to-latest; continue-discussion draft injection; keyword + LLM semantic search (session-scoped or global); per-plugin model selection; status indicators; backfill of the 10 most recent sessions on install.
 
 **Install**: enable *Experimental plugins → Custom plugin indexes*, then add
-`https://raw.githubusercontent.com/weiyuxiang/dsh-session-topics/main/market-index.json`
-Or `pnpm add github:weiyuxiang/dsh-session-topics`.
+`https://raw.githubusercontent.com/weseeon/dsh-session-topics/main/market-index.json`
+Or `pnpm add github:weseeon/dsh-session-topics`.
 
 **Runs with or without** [`dsh-better-sidebar`](https://github.com/): with it the panel is a sidebar tab; without it a floating button opens the panel in a drawer.
 
@@ -155,4 +155,4 @@ Or `pnpm add github:weiyuxiang/dsh-session-topics`.
 
 ## License
 
-MIT © weiyuxiang
+MIT © weseeon

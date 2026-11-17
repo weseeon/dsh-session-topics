@@ -15,11 +15,11 @@
     "summary"
   ],
   "license": "MIT",
-  "author": "weiyuxiang",
-  "homepage": "https://github.com/weiyuxiang/dsh-session-topics#readme",
+  "author": "weseeon",
+  "homepage": "https://github.com/weseeon/dsh-session-topics#readme",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/weiyuxiang/dsh-session-topics.git"
+    "url": "git+https://github.com/weseeon/dsh-session-topics.git"
   },
   "icon": "./icon.svg",
   "exports": {
