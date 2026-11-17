@@ -1,6 +1,6 @@
 {
   "name": "dsh-session-topics",
-  "version": "0.1.3",
+  "version": "0.1.10",
   "type": "module",
   "description": "Session Topics: LLM-organized topic navigation for every DSH conversation — jump to a topic, return to the latest exchange, continue an old thread, and search topics across sessions.",
   "keywords": [
