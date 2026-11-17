@@ -73,12 +73,12 @@
       },
       "versions": [
         {
-          "version": "0.1.3",
-          "publishTimestamp": 1794890368,
+          "version": "0.1.10",
+          "publishTimestamp": 1794900461,
           "source": {
             "type": "git",
             "url": "https://github.com/weseeon/dsh-session-topics",
-            "commit": "e253c2b1ece2ddb4ce594a5c74f181bb51dd670d"
+            "commit": "4d90665e9c46f78a67fbf6a3c228e9716238024d"
           },
           "engines": {
             "dsh": ">=0.2.1-rc.3"
