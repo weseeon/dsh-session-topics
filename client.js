@@ -13,6 +13,8 @@ window.__ModuleLoader__.load({
 	id: "dsh-session-topics",
 	factory(require) {
 		const React = require("react");
+		const ReactDOM = require("react-dom");
+		const createPortal = ReactDOM.createPortal;
 		const { useState, useEffect, useMemo, useRef, useCallback, useSyncExternalStore } = React;
 		const h = React.createElement;
 
@@ -23,6 +25,7 @@ window.__ModuleLoader__.load({
 			zh: {
 				"tab.title": "主题",
 			"tab.description": "本会话的主题导航：LLM 整理的主题列表，点击跳转、继续讨论",
+				"rail.openPanel": "展开主题面板",
 				"search.placeholder": "搜索主题…",
 				"search.scope.session": "本会话",
 				"search.scope.global": "全局",
@@ -66,6 +69,7 @@ window.__ModuleLoader__.load({
 			en: {
 				"tab.title": "Topics",
 			"tab.description": "Topic navigation for this session: LLM-organized topics with jump and continue",
+				"rail.openPanel": "Open the topics panel",
 				"search.placeholder": "Search topics…",
 				"search.scope.session": "Session",
 				"search.scope.global": "All",
@@ -275,6 +279,30 @@ window.__ModuleLoader__.load({
 .stp-toolBtn:focus-visible{outline:1px solid var(--dsw-alias-state-business-primary,#4176e6);outline-offset:1px}
 .stp-toolIcon{display:inline-flex;align-items:center;flex:none;width:16px;height:16px}
 .stp-toolLabel{display:inline-block}
+
+/* ---------- topic rail (right edge) ---------- */
+.str-frame{position:absolute;top:0;right:12px;z-index:7;display:flex;flex-direction:column;align-items:flex-end;gap:6px;width:28px;pointer-events:none;height:calc(var(--dsh-conversation-viewport-height,100dvh) - var(--dsh-composer-height,152px));top:calc(var(--dsh-conversation-viewport-height,100dvh) / 2 - var(--dsh-composer-height,152px) / 2);transform:translateY(-50%);max-height:min(max(0px, calc(var(--dsh-conversation-viewport-height,100dvh) - var(--dsh-composer-height,152px) - 64px)), 420px)}
+.str-scroller{max-height:100%;overflow-y:auto;scrollbar-width:none;position:relative;pointer-events:auto}
+.str-scroller::-webkit-scrollbar{display:none}
+.str-marks{position:relative;width:28px}
+.str-mark{cursor:pointer;background:0 0;border:0;border-radius:8px;height:10px;padding:0;position:absolute;top:0;left:0;right:0}
+.str-bar{display:block;width:20px;height:2px;border-radius:2px;background:var(--dsw-alias-border-l4);margin-left:auto;transform:scaleX(.6);transform-origin:100%;transition:transform .14s,background-color .14s}
+.str-mark:hover .str-bar,.str-markPreview .str-bar{background:var(--dsw-alias-label-tertiary);transform:scaleX(.9)}
+.str-markActive .str-bar{background:var(--dsw-alias-label-primary);transform:scaleX(1)}
+.str-markBusy .str-bar{animation:str-pulse 1s ease-in-out infinite}
+.str-mark:focus-visible{outline:none}
+.str-mark:focus-visible .str-bar{background:var(--dsw-focus-ring-color,var(--dsw-alias-state-business-primary));transform:scaleX(1)}
+@keyframes str-pulse{0%,to{opacity:1}50%{opacity:.35}}
+.str-preview{position:absolute;right:calc(100% + 10px);width:min(300px,100cqw - 120px);box-sizing:border-box;border-radius:var(--dsw-radius-lg);background:var(--dsw-alias-bg-layer-1);box-shadow:var(--dsw-elevation-panel);border:0;padding:10px 12px;pointer-events:none;overflow:hidden;animation:str-preview-in .12s ease-out}
+.str-previewTitle{font:var(--dsw-font-xs-strong-13);color:var(--dsw-alias-label-primary);display:-webkit-box;-webkit-line-clamp:1;-webkit-box-orient:vertical;overflow:hidden}
+.str-previewBody{font:var(--dsw-font-xxs-12);color:var(--dsw-alias-label-caption);display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden;margin-top:4px}
+.str-previewMeta{font:var(--dsw-font-xxs-12);color:var(--dsw-alias-label-tertiary);margin-top:4px}
+@keyframes str-preview-in{0%{opacity:0;transform:translate(4px)}to{opacity:1;transform:translate(0)}}
+.str-open{pointer-events:auto;flex:none;width:24px;height:24px;display:inline-flex;align-items:center;justify-content:center;border:0;border-radius:6px;background:0 0;color:var(--dsw-alias-label-tertiary);cursor:pointer;transition:color .12s,background .12s}
+.str-open:hover{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-secondary)}
+@media (container-width<=900px){.str-frame{display:none}}
+@media (prefers-reduced-motion:reduce){.str-mark,.str-bar,.str-preview{transition:none;animation:none}}
+
 .stp-headTitle{font-weight:600;flex:1}
 .stp-headBtn{border:0;background:transparent;color:var(--dsw-alias-label-secondary);padding:3px 6px;border-radius:var(--dsw-radius-sm);font-size:12px;cursor:pointer}
 .stp-headBtn:hover{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary)}
@@ -927,6 +955,260 @@ window.__ModuleLoader__.load({
 			);
 		}
 
+		/**
+		 * Mount children into the conversation scroll surface. The view slot renders
+		 * inside the transcript column, but the rail has to sit on the surface's right
+		 * edge — the same ancestor the native turn navigator positions against.
+		 */
+		function RailPortal({ children }) {
+			const [host, setHost] = useState(null);
+			useEffect(() => {
+				const find = () => document.querySelector("[data-conversation-scroll]");
+				const initial = find();
+				if (initial !== null) {
+					setHost(initial);
+					return undefined;
+				}
+				let tries = 0;
+				const timer = setInterval(() => {
+					tries += 1;
+					const element = find();
+					if (element !== null) {
+						setHost(element);
+						clearInterval(timer);
+					} else if (tries > 40) {
+						clearInterval(timer);
+					}
+				}, 250);
+				return () => clearInterval(timer);
+			}, []);
+			if (host === null) return null;
+			return createPortal(children, host);
+		}
+
+		/**
+		 * Rail host: owns the topic feed for the rail. The side card gets its data
+		 * from `TopicsPanel`'s own subscription; the rail is a separate mount and
+		 * must not depend on the panel being alive.
+		 */
+		function RailHost({ t, sessionId, loadThrough, openPanel, useOpenFlag }) {
+			const sideCardOpen = useOpenFlag();
+			const [topics, setTopics] = useState(null);
+			const [phase, setPhase] = useState("idle");
+
+			useEffect(() => {
+				if (sessionId == null) return undefined;
+				let disposed = false;
+				const source = new EventSource(`${ROUTE}events?sessionId=${encodeURIComponent(sessionId)}`);
+				source.onmessage = (event) => {
+					if (disposed) return;
+					try {
+						const payload = JSON.parse(event.data);
+						if (payload.kind === "topics" && payload.sessionId === sessionId) {
+							setTopics(payload.topicList?.topics ?? []);
+						} else if (payload.kind === "status" && payload.sessionId === sessionId) {
+							setPhase(payload.status?.phase ?? "idle");
+						}
+					} catch {
+						/* ignore malformed frames */
+					}
+				};
+				source.onerror = () => {
+					/* EventSource reconnects on its own */
+				};
+				api(`topics?sessionId=${encodeURIComponent(sessionId)}`)
+					.then((data) => {
+						if (!disposed) setTopics(data?.topics ?? []);
+					})
+					.catch(() => {});
+				return () => {
+					disposed = true;
+					source.close();
+				};
+			}, [sessionId]);
+
+			return h(TopicRail, {
+				t,
+				sessionId,
+				topics,
+				phase,
+				loadThrough: typeof loadThrough === "function" ? (seq) => loadThrough(sessionId, seq) : undefined,
+				onOpenPanel: openPanel,
+				hidden: sideCardOpen,
+			});
+		}
+
+		// ---------- topic rail ----------
+		//
+		// A slim always-on rail on the right edge of the transcript, mirroring the
+		// shell's own turn navigator (`TurnNavigator` in dsh-client-ui-chat): one
+		// short mark per topic, a hover/focus preview card that opens to the left,
+		// and click-to-jump. It is deliberately NOT the side card: the rail shows
+		// where you are, the side card shows what each topic said. They are
+		// mutually exclusive — whichever opens hides the other.
+
+		const RAIL_MARK_PX = 10; // mark slot height, same rhythm as the native rail
+		const RAIL_INSET_PX = 6;
+		const RAIL_FADE_PX = 24;
+
+		/** Clip a string to `limit` characters, appending an ellipsis when it was cut. */
+		function clip(text, limit) {
+			const value = String(text ?? "").replace(/\s+/g, " ").trim();
+			return value.length > limit ? `${value.slice(0, limit - 1).trimEnd()}…` : value;
+		}
+
+		function TopicRail({ t, sessionId, topics, phase, loadThrough, onOpenPanel, hidden }) {
+			const [previewId, setPreviewId] = useState(null);
+			const [activeId, setActiveId] = useState(null);
+			const scrollerRef = useRef(null);
+
+			const items = useMemo(() => {
+				const list = Array.isArray(topics) ? topics : [];
+				return list.map((topic, index) => ({
+					topic,
+					index,
+					title: clip(topic.title, 24),
+					preview: clip(topic.summary || topic.title, 120),
+				}));
+			}, [topics]);
+
+			const busy = phase === "summarizing";
+			const total = items.length;
+
+			// Follow the transcript: the topic whose turn range covers the turn at the
+			// top of the viewport is "where you are".
+			useEffect(() => {
+				if (total === 0) return undefined;
+				let frame = null;
+				const measure = () => {
+					frame = null;
+					const scroller = chatScroller();
+					if (scroller === null) return;
+					const rows = scroller.querySelectorAll("[data-chat-turn]:not([hidden])");
+					const top = scroller.getBoundingClientRect().top;
+					let current = null;
+					for (const row of rows) {
+						if (row.getBoundingClientRect().bottom < top + 8) continue;
+						const value = Number(row.getAttribute("data-chat-turn"));
+						if (Number.isSafeInteger(value)) current = value;
+						break;
+					}
+					if (current === null) return;
+					let match = null;
+					for (const item of items) {
+						const start = item.topic.startTurn;
+						const span = Math.max(1, item.topic.turnCount || 1);
+						if (current >= start && current < start + span) {
+							match = item.topic.id;
+							break;
+						}
+						if (current >= start) match = item.topic.id;
+					}
+					setActiveId(match);
+				};
+				const onScroll = () => {
+					if (frame !== null) return;
+					frame = requestAnimationFrame(measure);
+				};
+				measure();
+				const scroller = chatScroller();
+				scroller?.addEventListener("scroll", onScroll, { passive: true });
+				window.addEventListener("resize", onScroll);
+				return () => {
+					if (frame !== null) cancelAnimationFrame(frame);
+					scroller?.removeEventListener("scroll", onScroll);
+					window.removeEventListener("resize", onScroll);
+				};
+			}, [items, total]);
+
+			// Keep the active mark inside the rail's scroll window.
+			useEffect(() => {
+				const scroller = scrollerRef.current;
+				if (scroller === null || activeId == null) return;
+				const index = items.findIndex((item) => item.topic.id === activeId);
+				if (index < 0) return;
+				const top = RAIL_INSET_PX + index * RAIL_MARK_PX;
+				const view = scroller.clientHeight;
+				if (view === 0) return;
+				if (top < scroller.scrollTop + RAIL_FADE_PX) {
+					scroller.scrollTo({ top: Math.max(0, top - RAIL_FADE_PX) });
+				} else if (top + RAIL_MARK_PX > scroller.scrollTop + view - RAIL_FADE_PX) {
+					scroller.scrollTo({ top: top + RAIL_MARK_PX - view + RAIL_FADE_PX });
+				}
+			}, [activeId, items]);
+
+			if (hidden || total === 0) return null;
+
+			const previewItem = previewId == null ? null : items.find((item) => item.topic.id === previewId);
+			const previewIndex = previewItem === undefined ? -1 : items.indexOf(previewItem);
+			const previewTop =
+				previewIndex < 0 ? 0 : RAIL_INSET_PX + previewIndex * RAIL_MARK_PX + RAIL_MARK_PX / 2;
+
+			return h(
+				"div",
+				{ className: "str-frame" },
+				previewItem ? (
+					h(
+						"div",
+						{ className: "str-preview", style: { top: `${previewTop}px` } },
+						h("div", { className: "str-previewTitle" }, previewItem.topic.title),
+						previewItem.topic.summary
+							? h("div", { className: "str-previewBody" }, previewItem.topic.summary)
+							: null,
+						h(
+							"div",
+							{ className: "str-previewMeta" },
+							`${t("topic.turnsPrefix")}${previewItem.topic.startTurn}–${previewItem.topic.startTurn + Math.max(1, previewItem.topic.turnCount || 1) - 1}`,
+						),
+					)
+				) : null,
+				h(
+					"div",
+					{ className: "str-scroller", ref: scrollerRef },
+					h(
+						"div",
+						{ className: "str-marks", style: { height: `${RAIL_INSET_PX * 2 + total * RAIL_MARK_PX}px` } },
+						items.map((item) =>
+							h(
+								"button",
+								{
+									key: item.topic.id,
+									type: "button",
+									className:
+										"str-mark" +
+										(item.topic.id === activeId ? " str-markActive" : "") +
+										(item.topic.id === previewId ? " str-markPreview" : "") +
+										(busy && item.index === total - 1 ? " str-markBusy" : ""),
+									style: { top: `${RAIL_INSET_PX + item.index * RAIL_MARK_PX}px` },
+									title: item.topic.title,
+									"aria-label": item.topic.title,
+									onPointerEnter: () => setPreviewId(item.topic.id),
+									onPointerLeave: () => setPreviewId(null),
+									onFocus: () => setPreviewId(item.topic.id),
+									onBlur: () => setPreviewId(null),
+									onClick: () => {
+										jumpToTopic(item.topic, loadThrough).catch(() => {});
+									},
+								},
+								h("span", { className: "str-bar" }),
+							),
+						),
+					),
+				),
+				h(
+					"button",
+					{
+						type: "button",
+						className: "str-open",
+						title: t("rail.openPanel"),
+						"aria-label": t("rail.openPanel"),
+						onClick: onOpenPanel,
+					},
+					IconTopics(14),
+				),
+			);
+		}
+
 		return {
 			inject: ["locale", "sessions", "uiWorkspace", "slots", "layout"],
 			apply(ctx) {
@@ -1048,32 +1330,55 @@ window.__ModuleLoader__.load({
 				/** One click toggles: open the side card, or close it when it is already up. */
 				const toggleTopics = () => {
 					const sid = currentSessionId();
-					const open = isTopicsTabOpen();
-					const probe = { phase: "v018-toggle", sid, open, steps: [] };
-					const logStep = (name, value) => probe.steps.push([name, value]);
-					logStep("openBefore", open);
 					try {
-						if (open) {
+						if (isTopicsTabOpen()) {
 							const tab = topicsTabInSidebar();
-							logStep("tab", tab ? { id: tab.id, kind: tab.kind } : null);
 							betterSidebar?.closeTab?.(tab?.id ?? TOPICS_TYPE, { sessionId: sid });
-							logStep("closed", true);
 						} else {
 							betterSidebar?.openTab?.({ type: TOPICS_TYPE, reveal: true }, { sessionId: sid });
-							logStep("opened", isTopicsTabOpen());
 						}
-					} catch (error) {
-						logStep("threw", String(error && error.message));
-					}
-					if (typeof window !== "undefined") {
-						void fetch(ROUTE + "diagnostic", {
-							method: "POST",
-							headers: { "content-type": "application/json" },
-							body: JSON.stringify(probe),
-						}).catch(() => {});
+					} catch {
+						/* sidebar unavailable */
 					}
 					setOpenFlag(isTopicsTabOpen());
 				};
+
+				// The right-edge rail: mounted once per session view, hidden while the
+				// side card is open so the two entry points never fight for the edge.
+				ctx.slots.inject("conversation.view", () =>
+					ctx.slots.register(
+						{
+							name: "conversation.view",
+							id: "session-topics-rail",
+							order: 40,
+						},
+						(props) => {
+							const sid = props?.session?.sessionId ?? props?.sessionId ?? currentSessionId();
+							// A view slot renders inline in the transcript column, where an
+							// absolutely-positioned rail would land in the flow. Portal it into
+							// the scroll surface itself, which is the only positioned ancestor
+							// the native rail also uses.
+							return h(RailPortal, {
+								children: h(RailHost, {
+									t,
+									sessionId: sid,
+									loadThrough,
+									openPanel: () => {
+										const target = currentSessionId();
+										try {
+											betterSidebar?.openTab?.({ type: TOPICS_TYPE, reveal: true }, { sessionId: target });
+										} catch {
+											/* sidebar unavailable */
+										}
+										setOpenFlag(isTopicsTabOpen());
+									},
+									useOpenFlag,
+								}),
+							});
+						},
+					),
+				);
+
 				ctx.slots.inject("conversation.input.left", () =>
 					ctx.slots.register(
 						{
