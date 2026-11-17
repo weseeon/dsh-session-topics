@@ -13,8 +13,7 @@ window.__ModuleLoader__.load({
 	id: "dsh-session-topics",
 	factory(require) {
 		const React = require("react");
-		const { createRoot } = require("react-dom/client");
-		const { useState, useEffect, useMemo, useRef, useCallback } = React;
+		const { useState, useEffect, useMemo, useRef, useCallback, useSyncExternalStore } = React;
 		const h = React.createElement;
 
 		const NS = "sessionTopics";
@@ -270,10 +269,12 @@ window.__ModuleLoader__.load({
 .stp-semantic:hover{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary)}
 .stp-semantic:disabled{opacity:.5;cursor:default}
 .stp-head{display:flex;align-items:center;gap:8px;padding:6px 12px 8px;border-bottom:.5px solid var(--dsw-alias-border-l1)}
-.stp-fab{position:fixed;right:18px;bottom:96px;z-index:60;display:flex;align-items:center;gap:6px;padding:8px 12px;border:0;border-radius:999px;background:var(--dsw-alias-interactive-bg-accent);color:#fff;font-size:12px;cursor:pointer;box-shadow:0 4px 14px rgba(0,0,0,.22)}
-.stp-fab:hover{filter:brightness(1.06)}
-.stp-standaloneOverlay{position:fixed;inset:0;z-index:61;background:rgba(0,0,0,.28);display:flex;justify-content:flex-end}
-.stp-standalone{width:min(420px,92vw);height:100%;background:var(--dsw-alias-bg-elevated,#fff);display:flex;flex-direction:column;box-shadow:-8px 0 24px rgba(0,0,0,.18);overflow:hidden}
+.stp-toolBtn{display:inline-flex;align-items:center;gap:4px;flex:none;height:auto;padding:2px 4px;margin:0 2px;border:0;border-radius:4px;background:none;box-shadow:none;color:var(--dsw-alias-label-secondary);font-size:13px;font-weight:500;font-family:var(--dsw-font-family,inherit);letter-spacing:0;line-height:1.4;white-space:nowrap;cursor:pointer;transition:color .12s ease;-webkit-appearance:none;appearance:none}
+.stp-toolBtn:hover{background:none;color:var(--dsw-alias-label-primary)}
+.stp-toolBtn[data-active="true"],.stp-toolBtn[data-active="true"]:hover{background:none;color:var(--dsw-alias-state-business-primary,#4176e6)}
+.stp-toolBtn:focus-visible{outline:1px solid var(--dsw-alias-state-business-primary,#4176e6);outline-offset:1px}
+.stp-toolIcon{display:inline-flex;align-items:center;flex:none;width:16px;height:16px}
+.stp-toolLabel{display:inline-block}
 .stp-headTitle{font-weight:600;flex:1}
 .stp-headBtn{border:0;background:transparent;color:var(--dsw-alias-label-secondary);padding:3px 6px;border-radius:var(--dsw-radius-sm);font-size:12px;cursor:pointer}
 .stp-headBtn:hover{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary)}
@@ -383,19 +384,109 @@ window.__ModuleLoader__.load({
 			);
 		}
 
-		/** Standalone entry: a floating drawer used when dsh-better-sidebar is absent. */
-		function StandaloneTopics({ t, sessionId, open, onClose, appendDraft, loadThrough, openSessionAt }) {
-			if (!open) return null;
+		/** Shared list glyph for the sidebar tab and the composer-dock entry. */
+				// DSH native `list-pen-outline` (viewBox 0 0 16 16), used by the shell's own
+		// list-ish icons so this entry matches the other composer buttons.
+		function IconTopics(size) {
 			return h(
-				"div",
-				{ className: "stp-standaloneOverlay", onClick: onClose },
+				"svg",
+				{ width: size, height: size, viewBox: "0 0 16 16", "aria-hidden": "true", fill: "none", style: { display: "block", flex: "none" } },
+				h("path", { d: "M4.9375 5.90295H11.0625", stroke: "currentColor", "stroke-width": "1.2", "stroke-linecap": "round" }),
+				h("path", { d: "M4.9375 9.02991H8.27841", stroke: "currentColor", "stroke-width": "1.2", "stroke-linecap": "round" }),
+				h("path", { d: "M12.5 1.32617C13.3039 1.32617 14 1.95171 14 2.77637V7.61328L13 8.68164V2.77637C13 2.55186 12.8007 2.32617 12.5 2.32617H3.5C3.1993 2.32617 3 2.55186 3 2.77637V13.2246C3.00044 13.4489 3.19963 13.6738 3.5 13.6738H8.32812L7.39258 14.6738H3.5C2.69637 14.6738 2.00042 14.0489 2 13.2246V2.77637C2 1.95171 2.69613 1.32617 3.5 1.32617H12.5Z", fill: "currentColor" }),
+				h("path", { d: "M8.97212 14.3693C9.17511 14.5723 9.37811 14.7753 9.5811 14.9783C9.67012 14.8953 9.75914 14.8123 9.84815 14.7293C11.4505 13.2352 13.0528 11.7411 14.6551 10.247C14.7441 10.164 14.8331 10.081 14.9221 9.99803C14.5989 9.6748 14.2756 9.35157 13.9524 9.02834C13.8694 9.11736 13.7864 9.20637 13.7034 9.29539C12.2093 10.8977 10.7152 12.5 9.22113 14.1023C9.13813 14.1913 9.05513 14.2803 8.97212 14.3693Z", fill: "currentColor" }),
+				h("path", { d: "M11.6323 13.7841C11.6323 14.0395 11.6323 14.295 11.6323 14.5504C11.6812 14.5523 11.7301 14.5543 11.779 14.5562C12.659 14.5913 13.539 14.6263 14.419 14.6614C14.4679 14.6633 14.5168 14.6653 14.5657 14.6672C14.5657 14.3339 14.5657 14.0006 14.5657 13.6672C14.5168 13.6692 14.4679 13.6711 14.419 13.6731C13.539 13.7081 12.659 13.7432 11.779 13.7783C11.7301 13.7802 11.6812 13.7821 11.6323 13.7841Z", fill: "currentColor" }),
+			);
+		}
+
+		/**
+		 * Composer-dock entry: a full-width row under the input card (same seat as the
+		 * PUA / goal docks). Expanded, it renders the panel inline inside the dock
+		 * instead of an overlay — an overlay on the shell root cannot be scoped, and
+		 * its scrollbar leaks onto the whole window.
+		 */
+		/**
+		 * Composer tool-row entry: one compact button next to PUA in
+		 * `conversation.input.left`. Clicking it opens the sidebar's "session-topics"
+		 * tab — all content lives in the DSH right sidebar, nothing renders here.
+		 */
+		function ToolRowEntry({ t, toggle, useOpenFlag }) {
+			const isOpen = useOpenFlag();
+			// Inline styles on purpose: the shell's base `button` rule paints a border
+			// and a surface, and beats any plugin class with ordinary specificity.
+			const style = {
+				display: "inline-flex",
+				alignItems: "center",
+				gap: "4px",
+				flex: "none",
+				width: "auto",
+				height: "auto",
+				minHeight: "0",
+				minWidth: "0",
+				padding: "2px 2px 2px 0",
+				margin: "0",
+				border: "0 none",
+				borderRadius: "0",
+				background: "none",
+				backgroundColor: "transparent",
+				boxShadow: "none",
+				outline: "none",
+				color: isOpen
+					? "var(--dsw-alias-state-business-primary, #4176e6)"
+					: "var(--dsw-alias-label-secondary)",
+				font: "inherit",
+				fontSize: "13px",
+				fontWeight: "500",
+				lineHeight: "1.4",
+				whiteSpace: "nowrap",
+				cursor: "pointer",
+				appearance: "none",
+				WebkitAppearance: "none",
+			};
+			return h(
+				"button",
+				{
+					type: "button",
+					style,
+					title: t("tab.title"),
+					"aria-label": t("tab.title"),
+					"aria-pressed": isOpen,
+					onMouseEnter: (event) => {
+						event.currentTarget.style.color = isOpen
+							? "var(--dsw-alias-state-business-primary, #4176e6)"
+							: "var(--dsw-alias-label-primary)";
+					},
+					onMouseLeave: (event) => {
+						event.currentTarget.style.color = isOpen
+							? "var(--dsw-alias-state-business-primary, #4176e6)"
+							: "var(--dsw-alias-label-secondary)";
+					},
+					onClick: () => toggle(),
+				},
 				h(
-					"div",
-					{ className: "stp-standalone", onClick: (event) => event.stopPropagation() },
-					h(TopicsPanel, { t, sessionId, appendDraft, loadThrough, openSessionAt, dismiss: onClose }),
+					"span",
+					{
+						style: {
+							display: "inline-flex",
+							alignItems: "center",
+							justifyContent: "center",
+							flex: "none",
+							width: "16px",
+							height: "16px",
+							overflow: "visible",
+						},
+						"aria-hidden": true,
+					},
+					IconTopics(16),
+				),
+				h(
+					"span",
+					{ style: { display: "inline-block", lineHeight: "1.4" } },
+					t("tab.title"),
 				),
 			);
 		}
+
 
 		function TopicsPanel({ t, sessionId, appendDraft, loadThrough, openSessionAt, dismiss }) {
 			const [topicList, setTopicList] = useState(null);
@@ -837,12 +928,45 @@ window.__ModuleLoader__.load({
 		}
 
 		return {
-			inject: ["locale", "sessions", "uiWorkspace"],
+			inject: ["locale", "sessions", "uiWorkspace", "slots", "layout"],
 			apply(ctx) {
 				const t = ctx.locale.bind(NS);
 				ctx.effect(() => ctx.locale.register(NS, dictionaries), "session-topics: dictionaries");
 
-				
+				/**
+				 * The session the user is looking at. Tracked from the tool-row slot's
+				 * owner props, because openTab needs a scope and the plugin no longer
+				 * parses the URL hash.
+				 */
+				let focusedSessionId;
+				const currentSessionId = () => focusedSessionId;
+
+				/**
+				 * Whether our tab is open in the side card. Mirrors the real sidebar
+				 * state so the tool-row button can render as pressed / unpressed.
+				 */
+				const openListeners = new Set();
+				let openValue = false;
+				const openFlagStore = {
+					subscribe: (listener) => {
+						openListeners.add(listener);
+						return () => openListeners.delete(listener);
+					},
+					getSnapshot: () => openValue,
+				};
+				const setOpenFlag = (next) => {
+					if (next === openValue) return;
+					openValue = next;
+					for (const listener of [...openListeners]) {
+						try {
+							listener();
+						} catch {
+							/* listener detached */
+						}
+					}
+				};
+				const useOpenFlag = () => useSyncExternalStore(openFlagStore.subscribe, openFlagStore.getSnapshot, () => false);
+
 				/** Inject a continuation draft into the session's composer. */
 				const appendDraft = (sessionId, text) => {
 					try {
@@ -883,70 +1007,106 @@ window.__ModuleLoader__.load({
 				} catch {
 					betterSidebar = undefined;
 				}
-				{
-					// Always mount a floating entry button, whether or not the sidebar
-					// registers a tab: the button is the plugin's own entry, the tab is
-					// only one host surface that may come and go with the sidebar.
-					const host = document.createElement("div");
-					const mount = () => {
-						if (typeof document === "undefined" || !document.body) return;
-						if (!host.isConnected) document.body.appendChild(host);
-					};
-					mount();
-					const mountTimer = setInterval(mount, 1000);
-					const root = createRoot(host);
-					const App = () => {
-						const [open, setOpen] = useState(false);
-						const [sessionId, setSessionId] = useState(null);
-						useEffect(() => {
-							const read = () => {
-								const match = location.hash.match(/session[-/]([0-9a-f-]{8,})/i);
-								setSessionId(match === null ? null : match[1]);
-							};
-							read();
-							const timer = setInterval(read, 2000);
-							window.addEventListener("hashchange", read);
-							return () => {
-								clearInterval(timer);
-								window.removeEventListener("hashchange", read);
-							};
-						}, []);
-						// The button stays reachable even before a session id is known:
-						// the panel itself resolves the session lazily, and hiding the
-						// entry on first paint made it look like the plugin had none.
-						return h(
-							React.Fragment,
-							null,
-							h(
-								"button",
-								{ className: "stp-fab", type: "button", onClick: () => setOpen(true) },
-								t("open.button"),
-							),
-							h(StandaloneTopics, {
-								t,
-								sessionId,
-								open,
-								onClose: () => setOpen(false),
-								appendDraft: (text) => appendDraft(sessionId, text),
-								loadThrough: (seq) => loadThrough(sessionId, seq),
-								openSessionAt,
-							}),
-						);
-					};
-					root.render(h(App));
-					ctx.effect(
-						() => () => {
-							clearInterval(mountTimer);
-							root.unmount();
-							host.remove();
+				// The plugin's own entry is ONE compact button in the composer tool row,
+				// right next to PUA (`conversation.input.left`). It only opens the sidebar
+				// tab — every piece of content lives in the sidebar, nothing renders here.
+				const TOPICS_TYPE = "session-topics";
+
+				/** The host right-sidebar controller, when this build provides one. */
+				const sidebarRightService = () => {
+					try {
+						return ctx.get("sidebarRight");
+					} catch {
+						return undefined;
+					}
+				};
+
+				/**
+				 * Whether our tab is open — answered by the HOST right sidebar, not by
+				 * better-sidebar's own bookkeeping.
+				 *
+				 * `service.getTab(id)` returns the registered DESCRIPTOR (`{id, single:
+				 * true}`), not an open tab, so it is truthy forever and cannot be used as
+				 * an is-open test. Once a native right sidebar exists, better-sidebar
+				 * proxies `openTab` straight to `ctx.sidebarRight` and never writes its own
+				 * store, so `bottomSplits` stays empty too. `sidebarRight.tabsIn(sessionId)`
+				 * reads the real dock layout and is the one reliable source.
+				 */
+				const topicsTabInSidebar = () => {
+					const sidebar = sidebarRightService();
+					if (sidebar === undefined) return undefined;
+					try {
+						const tabs = sidebar.tabsIn?.(currentSessionId());
+						if (!Array.isArray(tabs)) return undefined;
+						return tabs.find((tab) => tab?.kind === TOPICS_TYPE);
+					} catch {
+						return undefined;
+					}
+				};
+				const isTopicsTabOpen = () => topicsTabInSidebar() !== undefined;
+
+				/** One click toggles: open the side card, or close it when it is already up. */
+				const toggleTopics = () => {
+					const sid = currentSessionId();
+					const open = isTopicsTabOpen();
+					const probe = { phase: "v018-toggle", sid, open, steps: [] };
+					const logStep = (name, value) => probe.steps.push([name, value]);
+					logStep("openBefore", open);
+					try {
+						if (open) {
+							const tab = topicsTabInSidebar();
+							logStep("tab", tab ? { id: tab.id, kind: tab.kind } : null);
+							betterSidebar?.closeTab?.(tab?.id ?? TOPICS_TYPE, { sessionId: sid });
+							logStep("closed", true);
+						} else {
+							betterSidebar?.openTab?.({ type: TOPICS_TYPE, reveal: true }, { sessionId: sid });
+							logStep("opened", isTopicsTabOpen());
+						}
+					} catch (error) {
+						logStep("threw", String(error && error.message));
+					}
+					if (typeof window !== "undefined") {
+						void fetch(ROUTE + "diagnostic", {
+							method: "POST",
+							headers: { "content-type": "application/json" },
+							body: JSON.stringify(probe),
+						}).catch(() => {});
+					}
+					setOpenFlag(isTopicsTabOpen());
+				};
+				ctx.slots.inject("conversation.input.left", () =>
+					ctx.slots.register(
+						{
+							name: "conversation.input.left",
+							id: "session-topics",
+							order: 20,
 						},
-						"session-topics: standalone entry",
-					);
-				}
+						(props) => {
+							const sid = props?.session?.sessionId ?? props?.sessionId;
+							if (sid != null) focusedSessionId = sid;
+							return h(ToolRowEntry, { t, toggle: toggleTopics, useOpenFlag });
+						},
+					),
+				);
 
 				if (betterSidebar === undefined) {
-					// No sidebar service: the floating button above is the only entry.
+					// No sidebar service: the tool-row button above is the only entry and
+					// it degrades to opening the host's native right sidebar.
 					return;
+				}
+
+				// Keep the button's pressed state in sync with the real side card, so a
+				// tab closed from the sidebar also un-presses the button.
+				try {
+					ctx.effect(
+						() =>
+							betterSidebar.subscribeState?.(() => {
+								setOpenFlag(isTopicsTabOpen());
+							}),
+						"session-topics: sidebar state",
+					);
+				} catch {
+					/* subscription is best-effort */
 				}
 
 				ctx.effect(
@@ -955,16 +1115,7 @@ window.__ModuleLoader__.load({
 							id: "session-topics",
 							title: () => t("tab.title"),
 							description: () => t("tab.description"),
-							icon: (size) =>
-								h(
-									"svg",
-									{ width: size, height: size, viewBox: "0 0 64 64", "aria-hidden": "true", fill: "none" },
-									h("rect", { x: "12", y: "8", width: "40", height: "48", rx: "9", stroke: "currentColor", "stroke-width": "6" }),
-									h("circle", { cx: "23", cy: "22", r: "4", fill: "currentColor" }),
-									h("rect", { x: "31", y: "19", width: "14", height: "6", rx: "3", fill: "currentColor" }),
-									h("circle", { cx: "23", cy: "34", r: "4", fill: "currentColor" }),
-									h("rect", { x: "31", y: "31", width: "14", height: "6", rx: "3", fill: "currentColor" }),
-								),
+							icon: (size) => IconTopics(size),
 							single: true,
 							component: ({ scope }) =>
 								h(TopicsPanel, {
