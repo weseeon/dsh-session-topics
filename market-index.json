@@ -78,7 +78,7 @@
           "source": {
             "type": "git",
             "url": "https://github.com/weseeon/dsh-session-topics",
-            "commit": "8df342cca92079dac550ca0334c47650697703cf"
+            "commit": "d768fc91596456da80dc664f9cda95074ed0c496"
           },
           "engines": {
             "dsh": ">=0.2.1-rc.3"
