@@ -1,0 +1,90 @@
+{
+  "format": 1,
+  "title": {
+    "zh": "会话主题",
+    "en": "Session Topics"
+  },
+  "description": {
+    "zh": "给 DSH 每个会话一份 LLM 整理的导航主题列表：点击跳转、回到最新、继续讨论、跨会话搜索。",
+    "en": "An LLM-maintained topic outline for every DSH conversation."
+  },
+  "metadata": {
+    "categories": {
+      "navigation": {
+        "title": {
+          "zh": "导航",
+          "en": "Navigation"
+        }
+      },
+      "productivity": {
+        "title": {
+          "zh": "效率",
+          "en": "Productivity"
+        }
+      }
+    },
+    "labels": {
+      "sidebar": {
+        "title": {
+          "zh": "侧边栏",
+          "en": "Sidebar"
+        }
+      },
+      "summary": {
+        "title": {
+          "zh": "总结",
+          "en": "Summary"
+        }
+      }
+    },
+    "sortKeys": {}
+  },
+  "plugins": [
+    {
+      "name": "dsh-session-topics",
+      "title": {
+        "zh": "会话主题",
+        "en": "Session Topics"
+      },
+      "description": {
+        "zh": "LLM 把会话整理成可导航的主题列表，显示在右侧栏：跳到主题位置、一键回到最新、从旧主题继续讨论、跨会话关键词与语意搜索。可选依赖 dsh-better-sidebar，未安装时以浮动按钮独立运行。",
+        "en": "LLM-organized topic navigation for every DSH conversation: jump to a topic, return to the latest exchange, continue an old thread, and search across sessions. Uses dsh-better-sidebar when present and runs standalone otherwise."
+      },
+      "author": "weiyuxiang",
+      "homepage": "https://github.com/weiyuxiang/dsh-session-topics#readme",
+      "repository": {
+        "url": "https://github.com/weiyuxiang/dsh-session-topics"
+      },
+      "metadata": {
+        "category": "navigation",
+        "keywords": [
+          "topics",
+          "navigation",
+          "outline",
+          "sidebar",
+          "summary",
+          "session"
+        ],
+        "labels": [
+          "sidebar",
+          "summary"
+        ],
+        "sortKeys": {}
+      },
+      "versions": [
+        {
+          "version": "0.1.0",
+          "publishTimestamp": 1794883836,
+          "source": {
+            "type": "git",
+            "url": "https://github.com/weiyuxiang/dsh-session-topics",
+            "commit": "4e32a7fc4aaa62ac28b6861e45b0e5b21f978ffd"
+          },
+          "engines": {
+            "dsh": ">=0.2.1-rc.3"
+          }
+        }
+      ]
+    }
+  ]
+}
