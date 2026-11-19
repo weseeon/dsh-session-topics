@@ -1729,9 +1729,15 @@ html[data-str-rail-on] ._4if9eW_frame{display:none!important}
 
 		/** Point the rail at a session: fresh SSE feed + initial fetch. */
 		function railSubscribe(sessionId) {
+			// A capsule left open belongs to the previous session's rows; collapse
+			// it before the list is emptied, otherwise the clip-path stays open on
+			// an empty panel and the strip looks like it flickered away.
+			if (railDom.expanded) railClose();
 			railDom.sessionId = sessionId;
 			railDom.topics = [];
 			railDom.activeId = null;
+			railDom.windowStart = 0;
+			railDom.sliceSize = undefined;
 			if (railDom.source !== null) {
 				railDom.source.close();
 				railDom.source = null;
@@ -2008,7 +2014,10 @@ html[data-str-rail-on] ._4if9eW_frame{display:none!important}
 		}
 
 		function railStart(opts) {
-			if (railDom.started) return;
+			// Tear down any previous instance FIRST, then claim the singleton. The
+			// old order returned early when a stale instance still owned the flag,
+			// which left the new module without a rail (frame never mounted, native
+			// strip not suppressed) until the stale keepalive noticed.
 			if (typeof window !== "undefined" && typeof window.__DSH_TOPIC_RAIL_STOP__ === "function") {
 				try {
 					window.__DSH_TOPIC_RAIL_STOP__();
@@ -2067,6 +2076,7 @@ html[data-str-rail-on] ._4if9eW_frame{display:none!important}
 			}
 			railDom.syncHidden = syncHidden;
 			syncHidden();
+			railApplyNative();
 			railDom.keepalive = setInterval(() => {
 				if (railDom.frame !== null && !railDom.frame.isConnected) {
 					document.body.appendChild(railDom.frame);
@@ -2083,6 +2093,12 @@ html[data-str-rail-on] ._4if9eW_frame{display:none!important}
 					ensureRailStyle();
 				}
 				railSetSession(railDom.opts?.currentSessionId?.());
+				// Re-assert the visibility contract every tick: a reparented frame,
+				// a rebuilt <html> or a session switch can otherwise leave the
+				// native strip visible while our frame is still hidden, so the two
+				// alternate for a beat (the "appears then vanishes" report).
+				railApplyNative();
+				railRender();
 				railMeasure();
 			}, 2000);
 			if (typeof window !== "undefined") window.__DSH_TOPIC_RAIL_STOP__ = railStop;
