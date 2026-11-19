@@ -850,44 +850,6 @@ export function apply(ctx, rawConfig) {
 				});
 				return;
 			}
-			if (method === "POST" && path === "rail-mount") {
-				const body = await readBody(req);
-				const fs = globalThis.process?.getBuiltinModule?.("node:fs");
-				const path = globalThis.process?.getBuiltinModule?.("node:path");
-				const os = globalThis.process?.getBuiltinModule?.("node:os");
-				if (fs !== undefined && path !== undefined && os !== undefined) {
-					try {
-						fs.appendFileSync(
-							path.join(os.tmpdir(), "dsh-session-topics-rail.log"),
-							`${new Date().toISOString()} ${JSON.stringify(body)}\n`,
-						);
-					} catch {
-						/* diagnostics only */
-					}
-				}
-				jsonReply(res, 200, { ok: true });
-				return;
-			}
-			if (method === "POST" && path === "diagnostic") {
-				const body = await readBody(req);
-				const fs = globalThis.process?.getBuiltinModule?.("node:fs");
-				if (fs !== undefined) {
-					try {
-						const path = globalThis.process?.getBuiltinModule?.("node:path");
-						const os = globalThis.process?.getBuiltinModule?.("node:os");
-						if (path !== undefined && os !== undefined) {
-							fs.writeFileSync(
-								path.join(os.tmpdir(), "dsh-session-topics-diagnostic.json"),
-								JSON.stringify({ at: Date.now(), ...body }, null, 1),
-							);
-						}
-					} catch {
-						/* diagnostics only */
-					}
-				}
-				jsonReply(res, 200, { ok: true });
-				return;
-			}
 			if (method === "GET" && path === "models") {
 				const providers = ctx.llm.listProviders();
 				const catalog = [];

@@ -7,17 +7,6 @@
  * continue-discussion draft injection, keyword search, LLM semantic search,
  * and cross-session navigation from global search results.
  */
-window.__DSH_TOPICS_BOOT__ = "loaded@" + Date.now();
-console.log("[session-topics] module factory entered");
-// TEMP DIAGNOSTIC: boot-chain probes (module-eval → apply → turntail-first-fire).
-// Remove once the restart-blank-rail mystery is solved.
-try {
-	fetch("/plugins/session-topics/rail-mount", {
-		method: "POST",
-		headers: { "Content-Type": "application/json" },
-		body: JSON.stringify({ stage: "module-eval", at: Date.now(), href: String(window.location?.href ?? "") }),
-	}).catch(() => {});
-} catch { /* diagnostics only */ }
 window.__ModuleLoader__.load({
 	id: "dsh-session-topics",
 	factory(require) {
@@ -225,35 +214,6 @@ window.__ModuleLoader__.load({
 		 * @param {number} turn - target agent turn.
 		 * @returns whether a row was found and aligned.
 		 */
-		/** Report the chat DOM shape to the Host when a jump fails, for offline diagnosis. */
-		function reportJumpDiagnostic(turn) {
-			const scroller = chatScroller();
-			const column = scroller !== null ? scroller.querySelector("[data-chat-flow]") : null;
-			const flow = scroller !== null ? scroller.querySelector('[data-slot="conversation.chat.flow"]') : null;
-			const rows = scroller !== null ? scroller.querySelectorAll("[data-chat-turn]:not([hidden])") : [];
-			const payload = {
-				turn,
-				hasScroller: scroller !== null,
-				hasColumn: column !== null,
-				hasFlow: flow !== null,
-				columnChildCount: column !== null ? column.children.length : 0,
-				columnChildren:
-					column !== null
-						? Array.from(column.children).slice(0, 8).map((child) => ({
-								tag: child.tagName,
-								hidden: child.hasAttribute("hidden"),
-								slot: child.getAttribute("data-slot"),
-								chatFlow: child.hasAttribute("data-chat-flow"),
-								hasButton: child.querySelector("button") !== null,
-								text: (child.textContent ?? "").slice(0, 50),
-							}))
-						: [],
-				rowTurnsHead: Array.from(rows).slice(0, 8).map((row) => row.getAttribute("data-chat-turn")),
-				rowTurnsTail: Array.from(rows).slice(-5).map((row) => row.getAttribute("data-chat-turn")),
-			};
-			post("diagnostic", payload).catch(() => {});
-		}
-
 		/**
 		 * Jump to a topic: first ask the host chat to fetch the page holding the
 		 * topic's first message (the built-in turn navigator's own path), then
@@ -317,7 +277,6 @@ window.__ModuleLoader__.load({
 				}
 				await delay(350);
 			}
-			reportJumpDiagnostic(turn);
 			return false;
 		}
 
@@ -362,7 +321,6 @@ window.__ModuleLoader__.load({
 				}
 				lastBottom = bottom;
 			}
-			post("rail-mount", { stage: "rail-back-to-latest", ok: chatScroller() !== null }).catch(() => {});
 			railDom.activeId = null;
 			railScheduleMeasure();
 		}
@@ -1363,7 +1321,7 @@ html[data-str-rail-on] ._4if9eW_frame{display:none!important}
 		//
 		// It used to mount per visible turn through the conversation.chat.turnTail
 		// slot, but the chat virtualiser tears those rows down aggressively
-		// (rail-mount logs: three portals created at boot, all deleted within
+		// (measured: three portals created at boot, all deleted within
 		// 50 ms, never recreated). The native navigator survives that rhythm only
 		// because the HOST re-renders it inside every recycled row. The rail now
 		// owns a fixed div on document.body and keeps itself alive with its own
@@ -1445,7 +1403,8 @@ html[data-str-rail-on] ._4if9eW_frame{display:none!important}
 			// Single authority for the frame's visibility: the hidden flag set by
 			// syncHidden. Anything that re-renders (measure, keepalive, session
 			// switch) must not resurrect a rail the user switched off.
-			railDom.frame.style.display = railDom.hidden || rows.length === 0 ? "none" : "";
+			const nextDisplay = railDom.hidden || rows.length === 0 ? "none" : "";
+			railDom.frame.style.display = nextDisplay;
 			railDom.frame.style.pointerEvents = railDom.hidden ? "none" : "";
 			const list = railDom.list;
 			// Fixed-height window instead of a long scrolling ribbon: only the
@@ -1633,6 +1592,11 @@ html[data-str-rail-on] ._4if9eW_frame{display:none!important}
 				const root = document.documentElement;
 				if (railDom.hidden) root.removeAttribute("data-str-rail-on");
 				else root.setAttribute("data-str-rail-on", "");
+				// The suppression rule only exists while our own <style> is in the
+				// head. A shell remount drops it, the native strip reappears while
+				// our frame still renders -> the "ours shows, ours vanishes, native
+				// takes over" report. Re-assert both sides together.
+				if (!railDom.hidden && document.getElementById("str-rail-style") === null) ensureRailStyle();
 			} catch { /* document not ready */ }
 		}
 
@@ -1721,9 +1685,6 @@ html[data-str-rail-on] ._4if9eW_frame{display:none!important}
 					}
 				}
 			}
-			try {
-				post("rail-mount", { stage: "rail-topics", sessionId: railDom.sessionId ?? null, n: railDom.topics.length });
-			} catch { /* diagnostics only */ }
 			railRender();
 		}
 
@@ -1743,7 +1704,6 @@ html[data-str-rail-on] ._4if9eW_frame{display:none!important}
 				railDom.source = null;
 			}
 			railRender();
-			post("rail-mount", { stage: "rail-session", sessionId });
 			const source = new EventSource(`${ROUTE}events?sessionId=${encodeURIComponent(sessionId)}`);
 			source.onmessage = (event) => {
 				try {
@@ -1815,14 +1775,25 @@ html[data-str-rail-on] ._4if9eW_frame{display:none!important}
 				}
 			}
 			frame.style.setProperty("--str-right", right + "px");
-			if (frame.offsetHeight === 0 && railRows().length > 0 && !railDom.hidden) frame.style.display = "";
+			// Never resurrect a rail the user switched off, and never force-empty a
+			// display that railRender just set to "none" for an empty list: only
+			// repair a frame that is genuinely zero-height while it should show.
+			if (frame.offsetHeight === 0 && railRows().length > 0 && !railDom.hidden && frame.style.display === "none" && railDom.topics?.length > 0) {
+				railRender();
+			}
 		}
 
 
 		/** How many rows fit once expanded — 56vh of 38px rows, like workbuddy. */
 		function railExpandRows() {
 			const hoverRow = railHoverRowHeight();
-			const budget = Math.max(240, Math.round(window.innerHeight * 0.56) - railHoverChrome());
+			// The capsule is centred on the viewport, so its height must leave a
+			// margin top AND bottom. Letting it grow to 56vh + a 240px floor made
+			// it taller than the pane in short windows, which pushed the first and
+			// last topics out of view (the "rail vanishes" report on a 20-topic
+			// session). Cap at 80% of the viewport, centred.
+			const cap = Math.max(160, Math.round(window.innerHeight * 0.8) - railHoverChrome());
+			const budget = Math.min(cap, Math.max(200, Math.round(window.innerHeight * 0.56) - railHoverChrome()));
 			return Math.max(3, Math.floor(budget / hoverRow));
 		}
 	/** Topic id of the row under a viewport Y, if any. */
@@ -1900,9 +1871,6 @@ html[data-str-rail-on] ._4if9eW_frame{display:none!important}
 					const maxScroll = Math.max(0, list.scrollHeight - expandedHeight);
 					const centred = Math.max(0, Math.min(maxScroll, rowCenter - expandedHeight / 2));
 					list.scrollTop = centred;
-					try {
-						post("rail-mount", { stage: "rail-open", index, rowCenter, centred, maxScroll, expandedHeight, anchor: target ?? null });
-					} catch { /* diagnostics only */ }
 				}
 				// Re-enable transitions on the next frame so the height animation
 				// still runs while the scroll position is already final.
@@ -1986,11 +1954,7 @@ html[data-str-rail-on] ._4if9eW_frame{display:none!important}
 					openTimer = null;
 					try {
 						railOpen(railAnchorTopicIdAt(railDom.lastPointerY ?? event.clientY));
-					} catch (error) {
-						try {
-							post("rail-mount", { stage: "hover-open-error", message: String(error && error.message ? error.message : error) });
-						} catch { /* diagnostics only */ }
-					}
+					} catch { /* geometry not ready */ }
 				}, 60);
 			};
 			frame.addEventListener("pointerenter", enter);
@@ -2055,7 +2019,6 @@ html[data-str-rail-on] ._4if9eW_frame{display:none!important}
 				railRender();
 				railSetSession(opts.currentSessionId?.());
 				railBindHover();
-				post("rail-mount", { stage: "rail-start", href: String(window.location?.href ?? "") });
 			};
 			mount();
 			document.addEventListener("scroll", railScheduleMeasure, { passive: true, capture: true });
@@ -2064,7 +2027,8 @@ html[data-str-rail-on] ._4if9eW_frame{display:none!important}
 			// One place decides the rail's visibility: the frame, the native-strip
 			// suppression flag and the open capsule all follow it.
 			const syncHidden = () => {
-				railDom.hidden = Boolean(opts.getHidden?.());
+				const next = Boolean(opts.getHidden?.());
+				railDom.hidden = next;
 				if (railDom.hidden && railDom.expanded) railClose();
 				railApplyNative();
 				railRender();
@@ -2079,9 +2043,18 @@ html[data-str-rail-on] ._4if9eW_frame{display:none!important}
 			railApplyNative();
 			railDom.keepalive = setInterval(() => {
 				if (railDom.frame !== null && !railDom.frame.isConnected) {
+					// If the shell swapped the whole <body>, the frame travels with the
+					// detached tree and keeps looking connected-but-nowhere. Re-anchor
+					// whenever the frame's owner document is no longer the live one.
 					document.body.appendChild(railDom.frame);
 					railDom.reappends += 1;
-					post("rail-mount", { stage: "rail-keepalive", reappends: railDom.reappends });
+				}
+				if (railDom.frame !== null) {
+					const owner = railDom.frame.ownerDocument;
+					if (owner !== document || railDom.frame.parentElement !== document.body) {
+						document.body.appendChild(railDom.frame);
+						railDom.reappends += 1;
+					}
 				}
 				if (railDom.frame !== null) {
 					for (const other of document.querySelectorAll(".str-frame")) {
@@ -2092,7 +2065,14 @@ html[data-str-rail-on] ._4if9eW_frame{display:none!important}
 					railStyleReady = false;
 					ensureRailStyle();
 				}
+				const beforeSession = railDom.sessionId;
 				railSetSession(railDom.opts?.currentSessionId?.());
+				if (beforeSession !== railDom.sessionId) {
+					// Session just changed: re-derive the dock state for the NEW
+					// session before the next render, otherwise the rail inherits
+					// the previous session's "sidebar open -> stay hidden" verdict.
+					try { Promise.resolve().then(() => railDom.resyncDock?.()); } catch {}
+				}
 				// Re-assert the visibility contract every tick: a reparented frame,
 				// a rebuilt <html> or a session switch can otherwise leave the
 				// native strip visible while our frame is still hidden, so the two
@@ -2146,47 +2126,9 @@ html[data-str-rail-on] ._4if9eW_frame{display:none!important}
 			}
 		}
 
-		// TEMP DIAGNOSTIC: component-independent sampler. Runs from apply() for
-		// 3 minutes, logging rail + DOM state every 2s. Remove once the fix is
-		// confirmed on a full restart.
-		let railSamplerStarted = false;
-		let inputLeftFired = false; // one-shot inputLeft render probe
-		function startRailSampler() {
-			if (railSamplerStarted) return;
-			railSamplerStarted = true;
-			let ticks = 0;
-			const timer = setInterval(() => {
-				ticks += 1;
-				try {
-					const native = document.querySelector("._4if9eW_frame");
-					post("rail-mount", {
-						stage: "sampler",
-						tick: ticks,
-						railAlive: railDom.frame === null ? null : railDom.frame.isConnected,
-						railHidden: railDom.hidden,
-						topics: railRows().length,
-						ourFrames: document.querySelectorAll(".str-frame").length,
-						styleEl: document.getElementById("str-rail-style") !== null,
-						nativeDisplay: native === null ? null : getComputedStyle(native).display,
-						turnTailEls: document.querySelectorAll("[data-turn-tail]").length,
-						chatTurns: document.querySelectorAll("[data-chat-turn]").length,
-						toolBtn: document.querySelectorAll("[data-session-topics-tool]").length,
-					});
-				} catch { /* diagnostics only */ }
-				if (ticks >= 90) clearInterval(timer);
-			}, 2000);
-		}
 		return {
 			inject: ["locale", "sessions", "uiWorkspace", "slots", "layout"],
 			apply(ctx) {
-				try {
-					fetch("/plugins/session-topics/rail-mount", {
-						method: "POST",
-						headers: { "Content-Type": "application/json" },
-						body: JSON.stringify({ stage: "apply", at: Date.now() }),
-					}).catch(() => {});
-				} catch { /* diagnostics only */ }
-				startRailSampler(); // TEMP DIAGNOSTIC: component-independent sampler
 				const t = ctx.locale.bind(NS);
 				ctx.effect(() => ctx.locale.register(NS, dictionaries), "session-topics: dictionaries");
 
@@ -2289,13 +2231,37 @@ html[data-str-rail-on] ._4if9eW_frame{display:none!important}
 				 * store, so `bottomSplits` stays empty too. `sidebarRight.tabsIn(sessionId)`
 				 * reads the real dock layout and is the one reliable source.
 				 */
+				/**
+				 * Session in which WE opened the topics card. The dock's tab list is
+				 * not scoped per session (tabs come back without an owner), so this is
+				 * the only evidence that the open card belongs to the session on screen.
+				 */
+				let openedInSession = null;
 				const topicsTabInSidebar = () => {
 					const sidebar = sidebarRightService();
 					if (sidebar === undefined) return undefined;
+					const sid = currentSessionId();
+					if (sid == null) return undefined;
 					try {
-						const tabs = sidebar.tabsIn?.(currentSessionId());
+						const tabs = sidebar.tabsIn?.(sid);
 						if (!Array.isArray(tabs)) return undefined;
-						return tabs.find((tab) => tab?.kind === TOPICS_TYPE);
+						// tabsIn() can answer with the PREVIOUS session's layout while the
+						// dock re-lays-out after a switch, which made the rail think "the
+						// side card is open" in a session that never opened it and hide
+						// itself 300ms after appearing. Only trust a tab that names our
+						// session (when the host exposes a session field at all).
+						const own = tabs.filter((tab) => {
+							if (tab?.kind !== TOPICS_TYPE) return false;
+							const owner = tab.sessionId ?? tab.scope?.sessionId ?? tab.scope;
+							// A tab that names its owner must name THIS session.
+							if (owner != null) return String(owner) === String(sid);
+							// The dock hands back owner-less tabs (e.g. "tab12") that
+							// survive session switches. Trust them only for the session we
+							// actually opened the card in; every other session must see the
+							// rail, otherwise one open card hides the rail everywhere.
+							return String(openedInSession) === String(sid);
+						});
+						return own[0];
 					} catch {
 						return undefined;
 					}
@@ -2309,8 +2275,10 @@ html[data-str-rail-on] ._4if9eW_frame{display:none!important}
 						if (isTopicsTabOpen()) {
 							const tab = topicsTabInSidebar();
 							betterSidebar?.closeTab?.(tab?.id ?? TOPICS_TYPE, { sessionId: sid });
+							openedInSession = null;
 						} else {
 							betterSidebar?.openTab?.({ type: TOPICS_TYPE, reveal: true }, { sessionId: sid });
+							openedInSession = sid;
 						}
 					} catch {
 						/* sidebar unavailable */
@@ -2341,13 +2309,37 @@ html[data-str-rail-on] ._4if9eW_frame{display:none!important}
 				if (rect === undefined) return null;
 				return Math.round(window.innerWidth - rect.right);
 			};
+			railDom.resyncDock = () => resyncRail();
 			const resyncRail = () => {
 				try {
+					// The dock is per-session, but the flag driving the rail was
+					// global: leaving a session with the topics tab open kept the rail
+					// hidden in EVERY later session, so the native strip came back the
+					// moment the user switched. Reset the flag whenever the tracked
+					// session changes before re-reading the dock.
+					const sidNow = currentSessionId();
+					const changed = resyncSession !== sidNow;
+					if (changed) {
+						resyncSession = sidNow;
+						setOpenFlag(false);
+						// The open card (if any) belonged to the previous session; close it
+						// so it cannot shadow the rail here. The dock ignores per-session
+						// scoping, so leaving it up means "open" leaks into every session.
+						if (openedInSession != null && String(openedInSession) !== String(sidNow)) {
+							try {
+								const stale = topicsTabInSidebar();
+								betterSidebar?.closeTab?.(stale?.id ?? TOPICS_TYPE, { sessionId: openedInSession });
+							} catch { /* sidebar unavailable */ }
+							openedInSession = null;
+						}
+					}
 					setOpenFlag(isTopicsTabOpen());
 				} catch { /* sidebar not ready */ }
 				const edge = paneEdge();
 				if (edge !== null) railPosition();
 			};
+			// Session the open-flag was last reconciled against.
+			let resyncSession;
 			let burst = 0;
 			const burstTick = () => {
 				resyncRail();
@@ -2359,17 +2351,65 @@ html[data-str-rail-on] ._4if9eW_frame{display:none!important}
 				burstTimer = null;
 			};
 			let burstTimer = null;
-			const burstResync = () => {
-				burst = 24; // ~400ms of per-frame tracking, then idle
+			/**
+			 * Track the pane's right edge for `ms` of animation frames.
+			 *
+			 * A CSS transition moves the pane without changing its box on every
+			 * frame, so ResizeObserver fires once at the start and never again —
+			 * the rail then sat still for the whole 500ms dock animation and only
+			 * caught up on the 1s safety poll ("the rail lags about a second
+			 * behind when I open the sidebar"). A transition event tells us the
+			 * animation STARTED, and that is when the frame loop must run.
+			 */
+			const burstResync = (ms) => {
+				const frames = Math.max(24, Math.ceil((Number.isFinite(ms) ? ms : 500) / 16) + 12);
+				burst = Math.max(burst, frames);
 				if (burstTimer === null) burstTimer = requestAnimationFrame(burstTick);
 			};
 			railDom.burstResync = burstResync;
+			/** Read the running duration of a transition so the burst lasts as long. */
+			const railTransitionMs = (el) => {
+				try {
+					const cs = getComputedStyle(el);
+					const dur = String(cs.transitionDuration || "0s").split(",");
+					const delay = String(cs.transitionDelay || "0s").split(",");
+					let best = 0;
+					for (let i = 0; i < dur.length; i += 1) {
+						const d = railTime(dur[i]);
+						const w = railTime(delay[i] ?? "0s");
+						best = Math.max(best, d + w);
+					}
+					return Math.min(2000, best > 0 ? best : 500);
+				} catch {
+					return 500;
+				}
+			};
+			const railTime = (value) => {
+				const raw = String(value).trim();
+				const num = Number.parseFloat(raw);
+				if (!Number.isFinite(num)) return 0;
+				return raw.endsWith("ms") ? num : num * 1000;
+			};
+			let paneDoc = null;
+			const onTransitionStart = (event) => {
+				// Only geometry-ish transitions matter: width/right/margin/padding.
+				const prop = event.propertyName || "";
+				if (!/^(width|right|left|margin|padding|flex|inset)/.test(prop)) return;
+				burstResync(railTransitionMs(event.target));
+			};
+			const onTransitionDone = () => burstResync(320);
 			try {
 				paneTarget = typeof chatScroller === "function" ? chatScroller() : null;
 				if (paneTarget !== null && typeof ResizeObserver === "function") {
-					paneObserver = new ResizeObserver(() => burstResync());
+					paneObserver = new ResizeObserver(() => burstResync(420));
 					paneObserver.observe(paneTarget);
 				}
+				// Capture phase on the document: the animation happens on an ancestor
+				// of the scroller (the dock column), not on the scroller itself.
+				paneDoc = paneTarget?.ownerDocument ?? document;
+				paneDoc.addEventListener("transitionrun", onTransitionStart, true);
+				paneDoc.addEventListener("transitionend", onTransitionDone, true);
+				window.addEventListener("resize", onTransitionDone);
 			} catch { /* observer unavailable */ }
 			// Slow safety net for the cases ResizeObserver cannot see (the pane
 			// element being replaced on a session switch, tab list churn).
@@ -2382,6 +2422,10 @@ html[data-str-rail-on] ._4if9eW_frame{display:none!important}
 						burstTimer = null;
 						paneObserver?.disconnect?.();
 						paneObserver = null;
+						paneDoc?.removeEventListener?.("transitionrun", onTransitionStart, true);
+						paneDoc?.removeEventListener?.("transitionend", onTransitionDone, true);
+						window.removeEventListener("resize", onTransitionDone);
+						paneDoc = null;
 						railDom.burstResync = null;
 					},
 					"session-topics: rail edge watch",
@@ -2413,7 +2457,6 @@ html[data-str-rail-on] ._4if9eW_frame{display:none!important}
 			} catch {}
 
 				ctx.slots.inject("conversation.input.left", () => {
-					post("rail-mount", { stage: "lifecycle", slot: "inputLeft", op: "inject-callback" });
 					const inner = ctx.slots.register(
 						{
 							name: "conversation.input.left",
@@ -2427,12 +2470,6 @@ html[data-str-rail-on] ._4if9eW_frame{display:none!important}
 								focusedSessionId = sid;
 								railSetSession(sid);
 							}
-							if (!inputLeftFired) {
-								inputLeftFired = true;
-								try {
-									post("rail-mount", { stage: "inputleft-render", sid: sid ?? null, at: Date.now() });
-								} catch { /* diagnostics only */ }
-							}
 							// The sidebar entry point is switchable: the slot stays
 							// registered and simply renders nothing when it is off,
 							// which keeps the ledger stable across toggles.
@@ -2441,8 +2478,7 @@ html[data-str-rail-on] ._4if9eW_frame{display:none!important}
 						},
 					);
 					return () => {
-						post("rail-mount", { stage: "lifecycle", slot: "inputLeft", op: "entry-dispose" });
-						try { inner(); } catch { /* diagnostics only */ }
+						try { inner(); } catch { /* slot already released */ }
 					};
 				});
 
@@ -2466,7 +2502,6 @@ html[data-str-rail-on] ._4if9eW_frame{display:none!important}
 						),
 					);
 				} catch (error) {
-					post("rail-mount", { stage: "settings-section-error", message: String(error && error.message ? error.message : error) });
 				}
 
 				if (betterSidebar === undefined) {
