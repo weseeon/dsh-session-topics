@@ -84,7 +84,7 @@
           "source": {
             "type": "git",
             "url": "https://github.com/weseeon/dsh-session-topics",
-            "commit": "PENDING_SHA"
+            "commit": "aaebea6968b7d771e2c33b0a9cb42aa9037ce0dd"
           },
           "engines": {
             "dsh": ">=0.2.1-rc.3"
