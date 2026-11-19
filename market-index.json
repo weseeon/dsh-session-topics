@@ -5,8 +5,8 @@
     "en": "Session Topics"
   },
   "description": {
-    "zh": "给 DSH 每个会话一份 LLM 整理的导航主题列表：点击跳转、回到最新、继续讨论、跨会话搜索。",
-    "en": "An LLM-maintained topic outline for every DSH conversation."
+    "zh": "把每个会话整理成可导航的主题列表，两种入口：右侧常驻胶囊刻度条（悬停展开、点击跳转、一键回到最新），或侧栏主题面板（搜索、跨会话检索、重新总结）。两个入口都能在「设置 → 会话主题」独立开关。",
+    "en": "Turns every DSH conversation into a navigable topic list with two entry points: an always-on capsule rail on the right edge (hover to expand, click to jump, back to latest) and a searchable sidebar panel. Both toggle independently under Settings → Session topics."
   },
   "metadata": {
     "categories": {
@@ -34,6 +34,12 @@
         "title": {
           "zh": "总结",
           "en": "Summary"
+        }
+      },
+      "rail": {
+        "title": {
+          "zh": "刻度条",
+          "en": "Rail"
         }
       }
     },

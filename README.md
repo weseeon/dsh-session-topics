@@ -2,7 +2,12 @@
 
 给 DSH 的每个会话配一份**可导航的主题目录**。
 
-长会话里，你 15 轮之前聊的话题和现在聊的往往毫无关系，回头找一个旧话题要一路往上翻。这个插件让大语言模型在后台持续把会话整理成若干个**主题**（不是逐条问答，而是按用途/工作线归并），显示在右侧栏里：点一下就跳到那段对话，一键回到最新，还能从旧主题接着聊。
+长会话里，你 15 轮之前聊的话题和现在聊的往往毫无关系，回头找一个旧话题要一路往上翻。这个插件让大语言模型在后台持续把会话整理成若干个**主题**（不是逐条问答，而是按用途/工作线归并），并以两种形态呈现：
+
+- **右侧刻度条**：替换 DSH 原生的会话刻度条，按主题重新分段，悬停展开成胶囊，点一下直达那段对话。
+- **侧栏面板**：完整的主题列表，支持关键词/语意搜索、跨会话检索、继续讨论。
+
+两个入口各有开关，可在 DSH 原生设置里分别关闭。
 
 > **发布形态**：这是 DSH 插件（bundle），通过市场索引或 `pnpm add` 安装。
 
@@ -27,7 +32,10 @@
 - **回到最新**：滚回会话末端。
 - **继续讨论**：把主题摘要注入输入框（`conversation.input.shell().setDraft`），不用手打。
 - **双模搜索**：关键词即时匹配（本地打分）＋「语意搜索」走 LLM 精排，都能跨会话检索。
-- **模型可配**：面板右上 ⚙ 选择总结用的 provider / 模型，与主对话模型解耦。
+- **右侧刻度条**：会话右边常驻一条按主题分段的刻度条，悬停展开成胶囊，逐条显示主题名与时间，点击跳到该主题开头；最下方一行「回到最新」。形态参考 WorkBuddy。
+- **两个独立开关**：「显示主题刻度条」与「显示侧栏主题面板」各管一个入口，在 DSH 原生设置 →「会话主题」里切换。关掉刻度条会还原 DSH 原生刻度条。
+- **模型可配**：在设置里选择总结用的 provider / 模型，与主对话模型解耦。
+- **访问检查**：所有 HTTP 路由都先过 DSH 自己的 `connection.requestRejection()`，浏览器里打开的任意网页读不到你的主题数据。
 - **状态可见**：整理中显示 spinner，完成绿 ✓，失败红点；主题行显示相对时间，刚更新的主题高亮。
 - **多会话初始化**：首次安装自动整理最近 10 个会话，面板上可暂停/继续。
 
@@ -70,7 +78,18 @@ pnpm add github:weseeon/dsh-session-topics
 
 ## 使用
 
-1. 打开一个会话，右侧栏/浮动按钮里打开「主题」
+### 刻度条（右侧常驻）
+
+会话右侧边缘有一条 40px 宽的刻度条，每 2px 一格代表一个主题。
+
+- **悬停**展开成 320px 胶囊，逐行显示「日期时间 · 主题名 · 刻度」
+- **点击某行**跳到该主题开头的对话
+- **最下方「回到最新」**滚回会话末尾
+- 当前所在主题的刻度更粗更长；胶囊只显示一屏行数，滚动查看更多
+
+### 侧栏面板
+
+1. 打开一个会话，输入框下方点「主题」按钮（或右侧栏 tab）
 2. 主题列表按时间倒序，每行显示标题、轮次范围、相对时间
 3. 点击主题 → 跳到该段对话开头
 4. 底部「↓ 回到最新」→ 回到底部
@@ -85,12 +104,25 @@ pnpm add github:weseeon/dsh-session-topics
 
 ## 配置
 
-### 面板内（推荐）
-右上 ⚙ → 选择 provider 与模型 → 保存。立即生效于下一次整理。
+### DSH 原生设置（推荐）
+
+**设置 → 会话主题**：
+
+| 项 | 说明 |
+|---|---|
+| 显示主题刻度条 | 替换 DSH 会话右侧的原生刻度条；关闭后恢复原生刻度条 |
+| 显示侧栏主题面板 | 输入框下方「主题」按钮 + Better Sidebar 标签页；关闭后一并收起 |
+| 总结模型 | 总结用的 provider / 模型 |
+| 主题数量上限 | 单会话最多保留多少个主题 |
+| 首次回填回合数 | 新会话载入时向前整理多少个历史回合 |
+
+改动即时生效，写入插件自己的 `storageDomain`。
 
 ### `cordis.patch.yml`
 | 字段 | 默认 | 说明 |
 |---|---|---|
+| `enableRail` | `true` | 显示右侧主题刻度条（覆盖原生刻度条） |
+| `enableSidebar` | `true` | 显示输入框「主题」按钮与侧栏标签页 |
 | `summarizer.provider` | `deepseek-official` | 总结用 provider |
 | `summarizer.model` | `deepseek-flash` | 总结用模型 |
 | `autoUpdate` | `true` | 每轮后自动增量总结 |
@@ -133,17 +165,21 @@ pnpm add github:weseeon/dsh-session-topics
 
 ### Session Topics
 
-An LLM-maintained **topic outline** for every DSH conversation, rendered in the right sidebar.
+An LLM-maintained **topic outline** for every DSH conversation, with two entry points: an always-on **capsule rail** on the right edge of the conversation, and a searchable right-sidebar panel.
 
 Long sessions drift across unrelated subjects. This plugin has the model continuously fold turns into a short list of topics (grouped by intent/workstream, not one entry per Q&A), so you can jump straight to a topic, return to the latest exchange, continue an old thread, and search topics across sessions.
 
-**Features**: incremental summarization on every `turn/end`; jump via the host's own `session.loadThrough(seq)`; back-to-latest; continue-discussion draft injection; keyword + LLM semantic search (session-scoped or global); per-plugin model selection; status indicators; backfill of the 10 most recent sessions on install.
+**Features**: incremental summarization on every `turn/end`; a WorkBuddy-style capsule rail (hover to expand, per-topic date column, click to jump, back-to-latest row) that replaces the native tick strip; jump via the host's own `session.loadThrough(seq)`; continue-discussion draft injection; keyword + LLM semantic search (session-scoped or global); status indicators; backfill of the 10 most recent sessions on install.
+
+**Settings**: both entry points toggle independently under *Settings → Session topics* (turning the rail off restores the native strip), next to the summarizer model and the topic/backfill limits.
 
 **Install**: enable *Experimental plugins → Custom plugin indexes*, then add
 `https://raw.githubusercontent.com/weseeon/dsh-session-topics/main/market-index.json`
 Or `pnpm add github:weseeon/dsh-session-topics`.
 
 **Runs with or without** [`dsh-better-sidebar`](https://github.com/): with it the panel is a sidebar tab; without it a floating button opens the panel in a drawer.
+
+**Security**: every HTTP route this plugin registers runs DSH's own `connection.requestRejection()`, so a web page open in your browser cannot read your topics.
 
 **Privacy**: topics live in DSH local storage (`session_topics`) and never leave your machine. Only the summarization step sends a session excerpt to your configured LLM provider (user messages full, assistant messages truncated to `assistantExcerptChars`, tool calls by name only).
 

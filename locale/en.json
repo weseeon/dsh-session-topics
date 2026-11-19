@@ -1,6 +1,7 @@
 {
-  "meta": {
-    "title": "Session Topics",
-    "description": "Summarizes each session into a navigable topic list in the right sidebar: jump to a topic, return to the latest exchange, continue an old topic, search topics across sessions, and backfill existing sessions after install."
-  }
+	"meta": {
+		"title": "Session Topics",
+		"description": "Turns each session into a navigable topic list with two entry points: an always-on capsule rail on the right edge (hover to expand, click a topic to jump, one-click back to latest) or the right-sidebar topics panel (topic search, cross-session lookup, re-summarize). Both can be toggled independently under Settings → Session topics."
+	},
+	"rail.panelTitle": "Topics"
 }

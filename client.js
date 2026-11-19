@@ -9,12 +9,19 @@
  */
 window.__DSH_TOPICS_BOOT__ = "loaded@" + Date.now();
 console.log("[session-topics] module factory entered");
+// TEMP DIAGNOSTIC: boot-chain probes (module-eval → apply → turntail-first-fire).
+// Remove once the restart-blank-rail mystery is solved.
+try {
+	fetch("/plugins/session-topics/rail-mount", {
+		method: "POST",
+		headers: { "Content-Type": "application/json" },
+		body: JSON.stringify({ stage: "module-eval", at: Date.now(), href: String(window.location?.href ?? "") }),
+	}).catch(() => {});
+} catch { /* diagnostics only */ }
 window.__ModuleLoader__.load({
 	id: "dsh-session-topics",
 	factory(require) {
 		const React = require("react");
-		const ReactDOM = require("react-dom");
-		const createPortal = ReactDOM.createPortal;
 		const { useState, useEffect, useMemo, useRef, useCallback, useSyncExternalStore } = React;
 		const h = React.createElement;
 
@@ -26,6 +33,29 @@ window.__ModuleLoader__.load({
 				"tab.title": "主题",
 			"tab.description": "本会话的主题导航：LLM 整理的主题列表，点击跳转、继续讨论",
 				"rail.openPanel": "展开主题面板",
+				"rail.backToLatest": "回到最新",
+				"settings.title": "会话主题",
+				"settings.desc": "会话右侧的主题刻度条，以及按主题浏览整段对话的侧栏面板",
+				"settings.enableRail": "显示主题刻度条",
+				"settings.enableRail.desc": "替换 DSH 会话右侧的原生刻度条：按主题重新分段，悬停展开胶囊显示主题名，点击跳到该主题开头。关闭后恢复原生刻度条。",
+				"settings.enableSidebar": "显示侧栏主题面板",
+				"settings.enableSidebar.desc": "在输入框下方显示「主题」按钮，并在 Better Sidebar 中注册主题标签页；关闭后按钮、标签页与已打开的面板一并收起。",
+				"settings.model": "总结模型",
+				"settings.model.desc": "用于把对话整理成主题的模型",
+				"settings.advanced": "高级",
+				"settings.maxTopics": "主题数量上限",
+				"settings.maxTopics.desc": "一次对话最多整理出多少个主题（3-100）",
+				"settings.backfill": "首次回填回合数",
+				"settings.backfill.desc": "新会话载入时，向前整理多少个历史回合（0-100）",
+				"settings.save": "保存",
+				"settings.saved": "已保存",
+				"settings.saving": "保存中…",
+				"settings.error": "保存失败",
+				"settings.guide": "使用说明",
+				"settings.guide.rail": "刻度条：悬停展开，滚动胶囊查看全部主题；点击某一行跳到该主题的开头。",
+				"settings.guide.back": "回到最新：胶囊最下方一行，滚动到这段对话的最末尾。",
+				"settings.guide.sidebar": "侧栏面板：支持关键词搜索、语义搜索、跨会话检索，以及从某个主题「继续讨论」。",
+				"settings.guide.auto": "主题由总结模型自动维护：每完成一个回合增量更新，不需要手动触发。",
 				"search.placeholder": "搜索主题…",
 				"search.scope.session": "本会话",
 				"search.scope.global": "全局",
@@ -70,6 +100,29 @@ window.__ModuleLoader__.load({
 				"tab.title": "Topics",
 			"tab.description": "Topic navigation for this session: LLM-organized topics with jump and continue",
 				"rail.openPanel": "Open the topics panel",
+				"rail.backToLatest": "Back to latest",
+				"settings.title": "Session topics",
+				"settings.desc": "The topic tick strip on the right edge, plus the sidebar panel for browsing a conversation by topic",
+				"settings.enableRail": "Show the topic rail",
+				"settings.enableRail.desc": "Replaces the native tick strip on the right edge of the conversation: resegmented by topic, hover to open the capsule with topic names, click to jump. Turning it off restores the native strip.",
+				"settings.enableSidebar": "Show the sidebar panel",
+				"settings.enableSidebar.desc": "Adds a Topics button under the composer and registers the topics tab in Better Sidebar; turning it off hides the button, unregisters the tab and closes an open panel.",
+				"settings.model": "Summarizer model",
+				"settings.model.desc": "The model that turns the conversation into topics",
+				"settings.advanced": "Advanced",
+				"settings.maxTopics": "Maximum topics",
+				"settings.maxTopics.desc": "How many topics one conversation can be split into (3-100)",
+				"settings.backfill": "Initial backfill turns",
+				"settings.backfill.desc": "How many historical turns to summarize when a session loads (0-100)",
+				"settings.save": "Save",
+				"settings.saved": "Saved",
+				"settings.saving": "Saving…",
+				"settings.error": "Save failed",
+				"settings.guide": "How it works",
+				"settings.guide.rail": "Rail: hover to expand, scroll inside the capsule for every topic, click a row to jump to that topic.",
+				"settings.guide.back": "Back to latest sits on the last capsule row and scrolls to the end of the conversation.",
+				"settings.guide.sidebar": "Sidebar panel: keyword and semantic search, cross-session results, and “continue discussing” from any topic.",
+				"settings.guide.auto": "Topics are maintained by the summarizer model: one incremental update per completed turn, no manual trigger.",
 				"search.placeholder": "Search topics…",
 				"search.scope.session": "Session",
 				"search.scope.global": "All",
@@ -206,15 +259,32 @@ window.__ModuleLoader__.load({
 		 * topic's first message (the built-in turn navigator's own path), then
 		 * align the row; DOM paging remains the fallback.
 		 */
+		/**
+		 * Jump to a topic. Loading history for an old topic can take seconds, so
+		 * the rail marks the row busy and locks re-entrant jumps — the old
+		 * version let three clicks start three paging races and swallow each
+		 * other, which read as "click does nothing".
+		 */
 		async function jumpToTopic(topic, loadThrough) {
-			if (typeof loadThrough === "function") {
-				try {
-					await loadThrough(topic.startSeq);
-				} catch {
-					/* fall back to DOM paging */
+			if (railDom.jumping) return false;
+			railDom.jumping = true;
+			const row = railDom.list === null
+				? null
+				: railDom.list.querySelector(`[data-topic-id="${railCssEscape(String(topic.id))}"]`);
+			row?.classList.add("str-rowBusy");
+			try {
+				if (typeof loadThrough === "function") {
+					try {
+						await loadThrough(topic.startSeq);
+					} catch {
+						/* fall back to DOM paging */
+					}
 				}
+				return await scrollToTurn(topic.startTurn);
+			} finally {
+				row?.classList.remove("str-rowBusy");
+				railDom.jumping = false;
 			}
-			return scrollToTurn(topic.startTurn);
 		}
 
 		async function scrollToTurn(turn) {
@@ -251,9 +321,50 @@ window.__ModuleLoader__.load({
 			return false;
 		}
 
-		function scrollToBottom() {
+		/**
+		 * Pin the transcript to the newest exchange. Two passes with a frame
+		 * between them, because the virtualiser may still be appending the
+		 * tail when the click lands; then the rail re-measures so the active
+		 * tick snaps back to the last topic.
+		 */
+		/**
+		 * "Back to latest" — workbuddy-style: smooth scroll, then re-check until
+		 * the scroller is actually at the end. The old version wrote scrollTop
+		 * three times 60 ms apart, which fought the virtualized list (each write
+		 * landed before the previous page had grown) and looked like an instant
+		 * jump on long conversations.
+		 */
+		async function scrollToBottom() {
 			const scroller = chatScroller();
-			if (scroller !== null) scroller.scrollTo({ top: scroller.scrollHeight, behavior: "smooth" });
+			if (scroller !== null) {
+				scroller.scrollTo({ top: scroller.scrollHeight, behavior: "smooth" });
+			}
+			// The virtualized list grows as the smooth scroll approaches the end,
+			// so keep pushing until the bottom stops moving.
+			let lastBottom = -1;
+			let stable = 0;
+			for (let attempt = 0; attempt < 40; attempt += 1) {
+				await delay(120);
+				const current = chatScroller();
+				if (current === null) continue;
+				const bottom = Math.round(current.scrollTop + current.clientHeight);
+				const atEnd = bottom >= current.scrollHeight - 2;
+				if (atEnd) {
+					stable += 1;
+					if (stable >= 2) break;
+				} else {
+					stable = 0;
+					current.scrollTo({ top: current.scrollHeight, behavior: "smooth" });
+				}
+				if (bottom === lastBottom) {
+					// Nothing is moving and we are not at the end: force it once.
+					if (!atEnd) current.scrollTop = current.scrollHeight;
+				}
+				lastBottom = bottom;
+			}
+			post("rail-mount", { stage: "rail-back-to-latest", ok: chatScroller() !== null }).catch(() => {});
+			railDom.activeId = null;
+			railScheduleMeasure();
 		}
 
 		/** A jump requested from another session's panel, consumed once the target panel loads. */
@@ -263,6 +374,31 @@ window.__ModuleLoader__.load({
 
 		const CSS = `
 .stp-root{display:flex;flex-direction:column;height:100%;min-height:0;font-size:13px;color:var(--dsw-alias-label-primary)}
+.sts-root{display:flex;flex-direction:column;gap:18px;font-size:13px;color:var(--dsw-alias-label-primary)}
+.sts-block{display:flex;flex-direction:column;border-top:.5px solid var(--dsw-alias-border-l2)}
+.sts-block:first-child{border-top:0}
+.sts-row{display:flex;align-items:center;gap:12px;padding:14px 0;border-bottom:.5px solid var(--dsw-alias-border-l2)}
+.sts-block .sts-row:last-child{border-bottom:0}
+.sts-rowText{flex:1;min-width:0;display:flex;flex-direction:column;gap:3px}
+.sts-rowTitle{font-size:14px;line-height:22px;color:var(--dsw-alias-label-primary)}
+.sts-rowDesc{font-size:12px;line-height:18px;color:var(--dsw-alias-label-tertiary)}
+.sts-rowCtl{flex:none;display:flex;align-items:center;gap:8px}
+.sts-switch{position:relative;flex:none;width:38px;height:22px;padding:0;border:0;border-radius:11px;background:var(--dsw-alias-border-l2);cursor:pointer;transition:background .18s ease}
+.sts-switch.sts-on{background:var(--dsw-alias-state-business-primary,#4176e6)}
+.sts-switch:disabled{cursor:default;opacity:.5}
+.sts-knob{position:absolute;top:2px;left:2px;width:18px;height:18px;border-radius:50%;background:#fff;box-shadow:0 1px 2px rgba(0,0,0,.25);transition:transform .18s ease}
+.sts-switch.sts-on .sts-knob{transform:translateX(16px)}
+.sts-pair{display:flex;align-items:center;gap:8px;flex-wrap:wrap;justify-content:flex-end}
+.sts-input{height:32px;padding:0 10px;border:.5px solid var(--dsw-alias-border-l2);border-radius:var(--dsw-radius-sm);background:var(--dsw-alias-bg-module-platform,transparent);color:var(--dsw-alias-label-primary);font-size:13px;font-family:inherit}
+.sts-input:focus{outline:none;border-color:var(--dsw-alias-state-business-primary,#4176e6)}
+.sts-num{width:88px;text-align:right}
+.sts-actions{display:flex;align-items:center;justify-content:flex-end;gap:10px;padding:12px 0 4px}
+.sts-status{font-size:12px;color:var(--dsw-alias-label-tertiary)}
+.sts-save{height:32px;padding:0 16px;border:0;border-radius:var(--dsw-radius-sm);background:var(--dsw-alias-state-business-primary,#4176e6);color:#fff;font-size:13px;font-family:inherit;cursor:pointer}
+.sts-save:disabled{opacity:.45;cursor:default}
+.sts-guideTitle{font-size:13px;font-weight:500;padding:14px 0 6px;color:var(--dsw-alias-label-primary)}
+.sts-guide{margin:0;padding:0 0 4px 18px;display:flex;flex-direction:column;gap:6px;font-size:12px;line-height:19px;color:var(--dsw-alias-label-secondary)}
+.sts-guide li{list-style:disc}
 .stp-search{display:flex;align-items:center;gap:6px;padding:10px 12px 6px}
 .stp-input{flex:1;min-width:0;box-sizing:border-box;height:28px;border:.5px solid var(--dsw-alias-border-l2);border-radius:var(--dsw-radius-sm);background:var(--dsw-alias-bg-base);color:var(--dsw-alias-label-primary);padding:0 8px;font:inherit}
 .stp-input:focus{outline:none;border-color:var(--dsw-alias-state-business-primary)}
@@ -280,28 +416,60 @@ window.__ModuleLoader__.load({
 .stp-toolIcon{display:inline-flex;align-items:center;flex:none;width:16px;height:16px}
 .stp-toolLabel{display:inline-block}
 
-/* ---------- topic rail (right edge) ---------- */
-.str-frame{position:absolute;top:0;right:12px;z-index:7;display:flex;flex-direction:column;align-items:flex-end;gap:6px;width:28px;pointer-events:none;height:calc(var(--dsh-conversation-viewport-height,100dvh) - var(--dsh-composer-height,152px));top:calc(var(--dsh-conversation-viewport-height,100dvh) / 2 - var(--dsh-composer-height,152px) / 2);transform:translateY(-50%);max-height:min(max(0px, calc(var(--dsh-conversation-viewport-height,100dvh) - var(--dsh-composer-height,152px) - 64px)), 420px)}
-.str-scroller{max-height:100%;overflow-y:auto;scrollbar-width:none;position:relative;pointer-events:auto}
-.str-scroller::-webkit-scrollbar{display:none}
-.str-marks{position:relative;width:28px}
-.str-mark{cursor:pointer;background:0 0;border:0;border-radius:8px;height:10px;padding:0;position:absolute;top:0;left:0;right:0}
-.str-bar{display:block;width:20px;height:2px;border-radius:2px;background:var(--dsw-alias-border-l4);margin-left:auto;transform:scaleX(.6);transform-origin:100%;transition:transform .14s,background-color .14s}
-.str-mark:hover .str-bar,.str-markPreview .str-bar{background:var(--dsw-alias-label-tertiary);transform:scaleX(.9)}
-.str-markActive .str-bar{background:var(--dsw-alias-label-primary);transform:scaleX(1)}
-.str-markBusy .str-bar{animation:str-pulse 1s ease-in-out infinite}
-.str-mark:focus-visible{outline:none}
-.str-mark:focus-visible .str-bar{background:var(--dsw-focus-ring-color,var(--dsw-alias-state-business-primary));transform:scaleX(1)}
-@keyframes str-pulse{0%,to{opacity:1}50%{opacity:.35}}
-.str-preview{position:absolute;right:calc(100% + 10px);width:min(300px,100cqw - 120px);box-sizing:border-box;border-radius:var(--dsw-radius-lg);background:var(--dsw-alias-bg-layer-1);box-shadow:var(--dsw-elevation-panel);border:0;padding:10px 12px;pointer-events:none;overflow:hidden;animation:str-preview-in .12s ease-out}
-.str-previewTitle{font:var(--dsw-font-xs-strong-13);color:var(--dsw-alias-label-primary);display:-webkit-box;-webkit-line-clamp:1;-webkit-box-orient:vertical;overflow:hidden}
-.str-previewBody{font:var(--dsw-font-xxs-12);color:var(--dsw-alias-label-caption);display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden;margin-top:4px}
-.str-previewMeta{font:var(--dsw-font-xxs-12);color:var(--dsw-alias-label-tertiary);margin-top:4px}
-@keyframes str-preview-in{0%{opacity:0;transform:translate(4px)}to{opacity:1;transform:translate(0)}}
-.str-open{pointer-events:auto;flex:none;width:24px;height:24px;display:inline-flex;align-items:center;justify-content:center;border:0;border-radius:6px;background:0 0;color:var(--dsw-alias-label-tertiary);cursor:pointer;transition:color .12s,background .12s}
-.str-open:hover{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-secondary)}
-@media (container-width<=900px){.str-frame{display:none}}
-@media (prefers-reduced-motion:reduce){.str-mark,.str-bar,.str-preview{transition:none;animation:none}}
+/* ---------- topic rail (right edge, workbuddy-style) ----------
+   One row per topic: [title … tick], right-aligned. Collapsed, rows are
+   20px tall with equal 12px ticks (active = dark + translucent border);
+   a small arrow row ("back to latest") sits directly below the active
+   tick. Hovering anywhere on the rail grows every row to 44px, titles
+   fade in left of the ticks, the active tick lengthens and its text turns
+   bold, and the whole list sits inside one translucent capsule; leaving
+   reverses it. Growth is staggered outward
+   from the row under the cursor, and JS shifts the frame top so that row
+   stays exactly under the cursor while everything grows around it. The
+   frame is pointer-events:none and :hover bubbles up from the list. */
+/* Capsule intent mirrors workbuddy: rest state is the thin ticks bare on
+   the page; the single panel capsule fades in with the growth, so the
+   dialog look belongs to the expanded state only. */
+.str-frame{--str-w-closed:40px;--str-w-expanded:320px;--str-row-rest:20px;--str-row-hover:38px;--str-visible-rows:12;--str-expanded-rows:10;--str-open-dur:.543s;--str-close-dur:.343s;--str-open-ease:cubic-bezier(.16,1,.3,1);--str-close-ease:cubic-bezier(.45,0,.3,1);--str-right:12px;position:fixed;top:50%;right:var(--str-right);z-index:30;display:flex;justify-content:flex-end;align-items:center;pointer-events:none;transform:translateY(-50%);transition:right var(--str-open-dur) var(--str-open-ease)}
+.str-frame.str-open{transition-duration:var(--str-open-dur);transition-timing-function:var(--str-open-ease)}
+.str-surface{position:absolute;top:0;right:0;bottom:0;width:var(--str-w-closed);border:0 solid color-mix(in srgb,var(--dsw-alias-label-primary) 12%,transparent);border-radius:16px;opacity:0;background:color-mix(in srgb,var(--dsw-alias-bg-layer-1,var(--dsw-alias-bg-base)) 90%,transparent);backdrop-filter:blur(12px) saturate(1.1);-webkit-backdrop-filter:blur(12px) saturate(1.1);box-shadow:0 6px 24px -8px rgb(0 0 0 / 18%);transition:width var(--str-close-dur) var(--str-close-ease),opacity var(--str-close-dur) var(--str-close-ease)}
+.str-frame.str-open .str-surface{width:var(--str-w-expanded);opacity:1;border-width:.5px;transition-duration:var(--str-open-dur);transition-timing-function:var(--str-open-ease)}
+.str-panel{position:relative;width:max-content;min-width:var(--str-w-closed);max-width:var(--str-w-expanded);overflow:hidden;border-radius:16px;pointer-events:none;clip-path:inset(0 0 0 calc(100% - var(--str-w-closed)) round 16px);transition:clip-path var(--str-close-dur) var(--str-close-ease)}
+.str-frame.str-open .str-panel{clip-path:inset(0 0 0 0 round 16px);pointer-events:auto;transition-duration:var(--str-open-dur);transition-timing-function:var(--str-open-ease)}
+.str-list{width:max-content;min-width:var(--str-w-closed);max-width:var(--str-w-expanded);box-sizing:border-box;display:flex;flex-direction:column;align-items:flex-end;padding:6px 4px 6px 8px;height:calc(var(--str-row-rest) * var(--str-visible-rows) + 12px);overflow:hidden;scrollbar-width:none;pointer-events:auto;transition:height var(--str-close-dur) var(--str-close-ease)}
+.str-frame.str-open .str-list{height:calc(var(--str-row-hover) * var(--str-expanded-rows) + 10px);padding-right:12px;overflow-y:auto;transition-duration:var(--str-open-dur);transition-timing-function:var(--str-open-ease)}
+.str-list.str-jump .str-row{transition:none}
+.str-list::-webkit-scrollbar{width:0;display:none}
+.str-frame.str-open .str-list::-webkit-scrollbar{width:4px;display:block}
+.str-frame.str-open .str-list::-webkit-scrollbar-thumb{border-radius:999px;background:color-mix(in srgb,var(--dsw-alias-label-primary) 24%,transparent)}
+.str-row{position:relative;box-sizing:border-box;display:flex;align-items:center;justify-content:flex-end;gap:12px;width:100%;height:var(--str-row-rest);padding:0 8px 0 12px;border:0;background:0 0;color:var(--dsw-alias-label-secondary);cursor:default;pointer-events:none;overflow:hidden;flex:none;font:inherit;font-size:13px;line-height:var(--str-row-rest);text-align:right;transition:height var(--str-close-dur) var(--str-close-ease),color var(--str-close-dur) var(--str-close-ease)}
+.str-frame.str-open .str-row{height:var(--str-row-hover);cursor:pointer;pointer-events:auto;transition-duration:var(--str-open-dur);transition-timing-function:var(--str-open-ease)}
+.str-rowWhen{flex:0 0 auto;font-size:11px;line-height:1;letter-spacing:.1px;white-space:nowrap;color:color-mix(in srgb,var(--dsw-alias-label-tertiary,var(--dsw-alias-label-secondary)) 70%,transparent);font-variant-numeric:tabular-nums;opacity:0;max-width:0;overflow:hidden;transition:opacity var(--str-close-dur) var(--str-close-ease),max-width var(--str-close-dur) var(--str-close-ease);margin-right:2px}
+.str-frame.str-open .str-rowWhen{opacity:1;max-width:96px;transition-duration:var(--str-open-dur);transition-timing-function:var(--str-open-ease)}
+.str-rowText{min-width:0;flex:1 1 auto;opacity:0;transform:translate(16px);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:right;transition:opacity var(--str-close-dur) var(--str-close-ease),transform var(--str-close-dur) var(--str-close-ease)}
+.str-frame.str-open .str-rowText{opacity:1;transform:translate(0);transition-duration:var(--str-open-dur);transition-timing-function:var(--str-open-ease)}
+.str-row.str-rowActive .str-rowText{color:var(--dsw-alias-label-primary);font-weight:500}
+.str-tick{flex:0 0 auto;box-sizing:content-box;width:12px;height:0;border:0;border-top:1px solid color-mix(in srgb,var(--dsw-alias-label-primary) 20%,transparent);border-radius:0;background:0 0;transition:width var(--str-close-dur) var(--str-close-ease),border-color var(--str-close-dur) var(--str-close-ease)}
+.str-frame.str-open .str-tick{transition-duration:var(--str-open-dur);transition-timing-function:var(--str-open-ease)}
+.str-row:not(.str-rowBack).str-rowActive .str-tick{width:28px;border-top-color:var(--dsw-alias-label-primary);border-top-width:1.5px}
+.str-row:not(.str-rowBack):hover .str-tick{width:20px;border-top-color:currentColor}
+/* The back row keeps a triangle whose SIZE never changes: only its colour
+   follows hover, so the arrow cannot morph into a trapezium when the shared
+   .str-tick rules widen it. */
+.str-rowBack .str-tick,.str-rowBack:hover .str-tick,.str-frame.str-open .str-rowBack .str-tick{flex:0 0 auto;box-sizing:content-box;width:0;height:0;border:0;border-top:5px solid color-mix(in srgb,var(--dsw-alias-label-primary) 50%,transparent);border-left:4px solid transparent;border-right:4px solid transparent;border-radius:0;background:0 0;transition:border-top-color var(--str-close-dur) var(--str-close-ease)}
+.str-rowBack:hover .str-tick{border-top-color:var(--dsw-alias-label-primary)}
+.str-rowBusy .str-tick{animation:str-pulse 1s ease-in-out infinite}
+.str-row:focus-visible{outline:1px solid var(--dsw-focus-ring-color,var(--dsw-alias-state-business-primary));outline-offset:-2px}
+@media (max-width:900px){.str-frame{display:none}}
+@media (prefers-reduced-motion:reduce){.str-row,.str-rowText,.str-tick{transition:none;animation:none}}
+/* The host TurnNavigator tick rail is hidden ONLY while our rail is on.
+   The rule is scoped to <html data-str-rail-on>, so switching the rail off
+   restores the native strip immediately instead of leaving a gap. Exact
+   hashed class from the dsh-client-ui-chat build: if DSH changes the hash
+   the rule simply stops matching (native rail reappears) and can never hit
+   another element. No wildcards. */
+html[data-str-rail-on] ._4if9eW_frame{display:none!important}
+
 
 .stp-headTitle{font-weight:600;flex:1}
 .stp-headBtn{border:0;background:transparent;color:var(--dsw-alias-label-secondary);padding:3px 6px;border-radius:var(--dsw-radius-sm);font-size:12px;cursor:pointer}
@@ -438,6 +606,92 @@ window.__ModuleLoader__.load({
 		 * `conversation.input.left`. Clicking it opens the sidebar's "session-topics"
 		 * tab — all content lives in the DSH right sidebar, nothing renders here.
 		 */
+		/**
+		 * Live plugin preferences, mirrored from the Host config.
+		 *
+		 * Two switches decide the two entry points (rail / sidebar panel) and the
+		 * advanced values feed the Host's summarizer. The store is a plain
+		 * snapshot so every React surface and the self-owned rail DOM can read
+		 * the same truth without a Context.
+		 */
+		const PREFS_DEFAULT = {
+			enableRail: true,
+			enableSidebar: true,
+			maxTopics: 20,
+			initBackfillCount: 10,
+			assistantExcerptChars: 500,
+			language: "auto",
+			searchResultLimit: 50,
+			semanticCandidateLimit: 100,
+			summarizer: null,
+		};
+		const prefsState = { value: { ...PREFS_DEFAULT }, loaded: false };
+		const prefsListeners = new Set();
+		const prefsStore = {
+			subscribe: (listener) => {
+				prefsListeners.add(listener);
+				return () => prefsListeners.delete(listener);
+			},
+			getSnapshot: () => prefsState.value,
+		};
+		const prefsSet = (next) => {
+			prefsState.value = { ...prefsState.value, ...next };
+			prefsState.loaded = true;
+			for (const listener of [...prefsListeners]) {
+				try {
+					listener();
+				} catch {
+					/* listener detached */
+				}
+			}
+		};
+		let prefsInflight = null;
+		const refreshPrefs = () => {
+			if (prefsInflight !== null) return prefsInflight;
+			prefsInflight = api("config")
+				.then((data) => {
+					prefsSet({
+						...PREFS_DEFAULT,
+						enableRail: data?.enableRail !== false,
+						enableSidebar: data?.enableSidebar !== false,
+						maxTopics: data?.maxTopics ?? PREFS_DEFAULT.maxTopics,
+						initBackfillCount: data?.initBackfillCount ?? PREFS_DEFAULT.initBackfillCount,
+						assistantExcerptChars: data?.assistantExcerptChars ?? PREFS_DEFAULT.assistantExcerptChars,
+						language: data?.language ?? PREFS_DEFAULT.language,
+						searchResultLimit: data?.searchResultLimit ?? PREFS_DEFAULT.searchResultLimit,
+						semanticCandidateLimit: data?.semanticCandidateLimit ?? PREFS_DEFAULT.semanticCandidateLimit,
+						summarizer: data?.summarizer ?? null,
+					});
+					return prefsState.value;
+				})
+				.catch(() => prefsState.value)
+				.finally(() => {
+					prefsInflight = null;
+				});
+			return prefsInflight;
+		};
+		const patchPrefs = (patch) => post("config-patch", patch).then((data) => {
+			// The route answers with the whole effective settings object, so the
+			// store mirrors the Host exactly instead of guessing at defaults.
+			const cfg = data?.config ?? data;
+			if (cfg !== undefined && cfg !== null) {
+				prefsSet({
+					enableRail: cfg.enableRail !== false,
+					enableSidebar: cfg.enableSidebar !== false,
+					maxTopics: cfg.maxTopics ?? PREFS_DEFAULT.maxTopics,
+					initBackfillCount: cfg.initBackfillCount ?? PREFS_DEFAULT.initBackfillCount,
+					assistantExcerptChars: cfg.assistantExcerptChars ?? PREFS_DEFAULT.assistantExcerptChars,
+					language: cfg.language ?? PREFS_DEFAULT.language,
+					searchResultLimit: cfg.searchResultLimit ?? PREFS_DEFAULT.searchResultLimit,
+					semanticCandidateLimit: cfg.semanticCandidateLimit ?? PREFS_DEFAULT.semanticCandidateLimit,
+					summarizer: cfg.summarizer ?? data?.summarizer ?? prefsState.value.summarizer,
+				});
+			}
+			return data;
+		});
+
+		const usePrefs = () => useSyncExternalStore(prefsStore.subscribe, prefsStore.getSnapshot, () => PREFS_DEFAULT);
+
 		function ToolRowEntry({ t, toggle, useOpenFlag }) {
 			const isOpen = useOpenFlag();
 			// Inline styles on purpose: the shell's base `button` rule paints a border
@@ -476,6 +730,7 @@ window.__ModuleLoader__.load({
 				{
 					type: "button",
 					style,
+					"data-session-topics-tool": "1",
 					title: t("tab.title"),
 					"aria-label": t("tab.title"),
 					"aria-pressed": isOpen,
@@ -516,6 +771,215 @@ window.__ModuleLoader__.load({
 		}
 
 
+		/**
+		 * One settings row: label + description on the left, the control on the
+		 * right, mirroring the shell's own settings rows so our section does not
+		 * look foreign next to General / Models / Built-in plugins.
+		 */
+		function SettingsRow({ title, desc, children }) {
+			return h(
+				"div",
+				{ className: "sts-row" },
+				h(
+					"div",
+					{ className: "sts-rowText" },
+					h("div", { className: "sts-rowTitle" }, title),
+					desc === undefined ? null : h("div", { className: "sts-rowDesc" }, desc),
+				),
+				h("div", { className: "sts-rowCtl" }, children),
+			);
+		}
+
+		/** The pill switch used by both entry-point toggles. */
+		function SettingsSwitch({ checked, disabled, onChange, label }) {
+			return h(
+				"button",
+				{
+					type: "button",
+					role: "switch",
+					"aria-checked": checked ? "true" : "false",
+					"aria-label": label,
+					className: checked ? "sts-switch sts-on" : "sts-switch",
+					disabled: disabled === true,
+					onClick: () => onChange(!checked),
+				},
+				h("span", { className: "sts-knob" }),
+			);
+		}
+
+		/**
+		 * The "Session topics" settings section.
+		 *
+		 * Reads and writes the plugin's own Host config (the same document the
+		 * sidebar panel's ⚙ used to edit), so there is exactly one source of
+		 * truth for both entry points.
+		 */
+		function SessionTopicsSection({ t }) {
+			const prefs = useSyncExternalStore(prefsStore.subscribe, prefsStore.getSnapshot, () => PREFS_DEFAULT);
+			const [catalog, setCatalog] = useState(null);
+			const [maxTopics, setMaxTopics] = useState("");
+			const [backfill, setBackfill] = useState("");
+			const [provider, setProvider] = useState("");
+			const [model, setModel] = useState("");
+			const [status, setStatus] = useState(null);
+			const seeded = useRef(false);
+
+			useEffect(() => {
+				refreshPrefs();
+				api("models")
+					.then((data) => setCatalog(data?.providers ?? []))
+					.catch(() => setCatalog([]));
+			}, []);
+
+			useEffect(() => {
+				if (seeded.current) return;
+				if (!prefsState.loaded) return;
+				seeded.current = true;
+				setMaxTopics(String(prefs.maxTopics));
+				setBackfill(String(prefs.initBackfillCount));
+				setProvider(prefs.summarizer?.provider ?? "");
+				setModel(prefs.summarizer?.model ?? "");
+			}, [prefs]);
+
+			const commit = useCallback(
+				(patch) => {
+					setStatus("saving");
+					patchPrefs(patch)
+						.then(() => setStatus("saved"))
+						.catch(() => setStatus("error"));
+				},
+				[],
+			);
+
+			const providers = catalog ?? [];
+			const models = providers.find((entry) => entry.provider === provider)?.models ?? [];
+			const dirty =
+				String(prefs.maxTopics) !== maxTopics.trim() ||
+				String(prefs.initBackfillCount) !== backfill.trim() ||
+				(prefs.summarizer?.provider ?? "") !== provider ||
+				(prefs.summarizer?.model ?? "") !== model;
+
+			return h(
+				"div",
+				{ className: "sts-root" },
+				h(
+					"div",
+					{ className: "sts-block" },
+					h(
+						SettingsRow,
+						{ title: t("settings.enableRail"), desc: t("settings.enableRail.desc") },
+						h(SettingsSwitch, {
+							checked: prefs.enableRail,
+							label: t("settings.enableRail"),
+							onChange: (next) => commit({ enableRail: next }),
+						}),
+					),
+					h(
+						SettingsRow,
+						{ title: t("settings.enableSidebar"), desc: t("settings.enableSidebar.desc") },
+						h(SettingsSwitch, {
+							checked: prefs.enableSidebar,
+							label: t("settings.enableSidebar"),
+							onChange: (next) => commit({ enableSidebar: next }),
+						}),
+					),
+				),
+				h(
+					"div",
+					{ className: "sts-block" },
+					h(
+						SettingsRow,
+						{ title: t("settings.model"), desc: t("settings.model.desc") },
+						h(
+							"div",
+							{ className: "sts-pair" },
+							h(
+								"select",
+								{
+									className: "sts-input",
+									value: provider,
+									onChange: (event) => {
+										setProvider(event.target.value);
+										setModel("");
+									},
+								},
+								h("option", { value: "" }, "—"),
+								providers.map((entry) =>
+									h("option", { key: entry.provider, value: entry.provider }, entry.name ?? entry.provider),
+								),
+							),
+							h(
+								"select",
+								{
+									className: "sts-input",
+									value: model,
+									onChange: (event) => setModel(event.target.value),
+								},
+								h("option", { value: "" }, "—"),
+								models.map((entry) => h("option", { key: entry.id, value: entry.id }, entry.name ?? entry.id)),
+							),
+						),
+					),
+					h(
+						SettingsRow,
+						{ title: t("settings.maxTopics"), desc: t("settings.maxTopics.desc") },
+						h("input", {
+							className: "sts-input sts-num",
+							type: "number",
+							min: 3,
+							max: 100,
+							value: maxTopics,
+							onChange: (event) => setMaxTopics(event.target.value),
+						}),
+					),
+					h(
+						SettingsRow,
+						{ title: t("settings.backfill"), desc: t("settings.backfill.desc") },
+						h("input", {
+							className: "sts-input sts-num",
+							type: "number",
+							min: 0,
+							max: 100,
+							value: backfill,
+							onChange: (event) => setBackfill(event.target.value),
+						}),
+					),
+					h(
+						"div",
+						{ className: "sts-actions" },
+						status === null ? null : h("span", { className: "sts-status" }, t(`settings.${status}`)),
+						h(
+							"button",
+							{
+								type: "button",
+								className: "sts-save",
+								disabled: !dirty || provider.length === 0 || model.length === 0,
+								onClick: () =>
+									commit({
+										maxTopics: Number(maxTopics),
+										initBackfillCount: Number(backfill),
+										summarizer: { provider, model },
+									}),
+							},
+							t("settings.save"),
+						),
+					),
+				),
+				h(
+					"div",
+					{ className: "sts-block" },
+					h("div", { className: "sts-guideTitle" }, t("settings.guide")),
+					h("ul", { className: "sts-guide" },
+						h("li", null, t("settings.guide.rail")),
+						h("li", null, t("settings.guide.back")),
+						h("li", null, t("settings.guide.sidebar")),
+						h("li", null, t("settings.guide.auto")),
+					),
+				),
+			);
+		}
+
+
 		function TopicsPanel({ t, sessionId, appendDraft, loadThrough, openSessionAt, dismiss }) {
 			const [topicList, setTopicList] = useState(null);
 			const [phase, setPhase] = useState("loading");
@@ -529,11 +993,7 @@ window.__ModuleLoader__.load({
 			const [viewingTopicId, setViewingTopicId] = useState(null);
 			const [toast, setToast] = useState(null);
 			const toastTimer = useRef(null);
-			const [configOpen, setConfigOpen] = useState(false);
 			const [summarizer, setSummarizer] = useState(null);
-			const [providerInput, setProviderInput] = useState("");
-			const [modelInput, setModelInput] = useState("");
-			const [modelCatalog, setModelCatalog] = useState(null);
 			const [doneFlash, setDoneFlash] = useState(false);
 			const prevPhase = useRef(null);
 			const [now, setNow] = useState(() => Date.now());
@@ -560,17 +1020,13 @@ window.__ModuleLoader__.load({
 				toastTimer.current = setTimeout(() => setToast(null), 2600);
 			}, []);
 
+			// The panel no longer edits settings — everything moved into
+			// Settings → Session topics. It only mirrors the summarizer route for
+			// the header line, so the SSE "config" frame stays in sync.
 			const loadConfig = useCallback(() => {
 				api("config")
-					.then((data) => {
-						setSummarizer(data.summarizer ?? null);
-						setProviderInput(data.summarizer?.provider ?? "");
-						setModelInput(data.summarizer?.model ?? "");
-					})
+					.then((data) => setSummarizer(data.summarizer ?? null))
 					.catch(() => {});
-				api("models")
-					.then((data) => setModelCatalog(data.providers ?? []))
-					.catch(() => setModelCatalog([]));
 			}, []);
 
 			// initial load + SSE subscription
@@ -720,15 +1176,6 @@ window.__ModuleLoader__.load({
 				post("backfill-control", { action }).catch(() => {});
 			}, []);
 
-			const onSaveConfig = useCallback(() => {
-				post("config", { provider: providerInput.trim(), model: modelInput.trim() })
-					.then((data) => {
-						setSummarizer(data.summarizer ?? null);
-						showToast(t("config.saved"));
-					})
-					.catch(() => showToast(t("status.error")));
-			}, [providerInput, modelInput, showToast, t]);
-
 			const searching = query.trim().length > 0;
 			const results = semanticResults ?? keywordResults;
 			const dotClass = phase === "summarizing" ? "summarizing" : phase === "error" ? "error" : phase === "loading" ? "loading" : "idle";
@@ -860,71 +1307,7 @@ window.__ModuleLoader__.load({
 									? h("span", { className: "stp-check", "aria-label": t("status.idle") }, "✓")
 									: null,
 					),
-					h(
-						"button",
-						{
-							className: "stp-headBtn",
-							type: "button",
-							title: t("config.title"),
-							onClick: () => {
-								setConfigOpen((open) => !open);
-								if (summarizer === null) loadConfig();
-							},
-						},
-						"⚙",
-					),
 				),
-				configOpen
-					? h(
-							"div",
-							{ className: "stp-config" },
-							h(
-								"div",
-								{ className: "stp-configTitle" },
-								`${t("config.title")}${summarizer !== null ? `: ${summarizer.provider} / ${summarizer.model}` : ""}`,
-							),
-							h("label", { className: "stp-configLabel" }, t("config.provider")),
-							h(
-								"select",
-								{
-									className: "stp-input",
-									value: providerInput,
-									onChange: (event) => {
-										setProviderInput(event.target.value);
-										setModelInput("");
-									},
-								},
-								h("option", { value: "" }, "—"),
-								(modelCatalog ?? []).map((entry) =>
-									h("option", { key: entry.provider, value: entry.provider }, entry.name ?? entry.provider),
-								),
-							),
-							h("label", { className: "stp-configLabel" }, t("config.model")),
-							h(
-								"select",
-								{
-									className: "stp-input",
-									value: modelInput,
-									onChange: (event) => setModelInput(event.target.value),
-								},
-								h("option", { value: "" }, "—"),
-								(modelCatalog ?? [])
-									.find((entry) => entry.provider === providerInput)
-									?.models.map((model) => h("option", { key: model.id, value: model.id }, model.name ?? model.id)) ?? [],
-							),
-							h("div", { className: "stp-configHint" }, t("config.hint")),
-							h(
-								"button",
-								{
-									className: "stp-configSave",
-									type: "button",
-									disabled: providerInput.length === 0 || modelInput.length === 0,
-									onClick: onSaveConfig,
-								},
-								t("config.save"),
-							),
-						)
-					: null,
 				backfillLive
 					? h(
 							"div",
@@ -955,263 +1338,839 @@ window.__ModuleLoader__.load({
 			);
 		}
 
-		/**
-		 * Mount children into the conversation scroll surface. The view slot renders
-		 * inside the transcript column, but the rail has to sit on the surface's right
-		 * edge — the same ancestor the native turn navigator positions against.
-		 */
-		function RailPortal({ children }) {
-			const [host, setHost] = useState(null);
-			useEffect(() => {
-				const find = () => document.querySelector("[data-conversation-scroll]");
-				const initial = find();
-				if (initial !== null) {
-					setHost(initial);
-					return undefined;
-				}
-				let tries = 0;
-				const timer = setInterval(() => {
-					tries += 1;
-					const element = find();
-					if (element !== null) {
-						setHost(element);
-						clearInterval(timer);
-					} else if (tries > 40) {
-						clearInterval(timer);
-					}
-				}, 250);
-				return () => clearInterval(timer);
-			}, []);
-			if (host === null) return null;
-			return createPortal(children, host);
-		}
 
 		/**
-		 * Rail host: owns the topic feed for the rail. The side card gets its data
-		 * from `TopicsPanel`'s own subscription; the rail is a separate mount and
-		 * must not depend on the panel being alive.
+		 * Inject the rail stylesheet once, with an id so a second call (panel +
+		 * rail) is a no-op. The rail keepalive re-injects it if the host ever
+		 * drops the element from <head>.
 		 */
-		function RailHost({ t, sessionId, loadThrough, openPanel, useOpenFlag }) {
-			const sideCardOpen = useOpenFlag();
-			const [topics, setTopics] = useState(null);
-			const [phase, setPhase] = useState("idle");
-
-			useEffect(() => {
-				if (sessionId == null) return undefined;
-				let disposed = false;
-				const source = new EventSource(`${ROUTE}events?sessionId=${encodeURIComponent(sessionId)}`);
-				source.onmessage = (event) => {
-					if (disposed) return;
-					try {
-						const payload = JSON.parse(event.data);
-						if (payload.kind === "topics" && payload.sessionId === sessionId) {
-							setTopics(payload.topicList?.topics ?? []);
-						} else if (payload.kind === "status" && payload.sessionId === sessionId) {
-							setPhase(payload.status?.phase ?? "idle");
-						}
-					} catch {
-						/* ignore malformed frames */
-					}
-				};
-				source.onerror = () => {
-					/* EventSource reconnects on its own */
-				};
-				api(`topics?sessionId=${encodeURIComponent(sessionId)}`)
-					.then((data) => {
-						if (!disposed) setTopics(data?.topics ?? []);
-					})
-					.catch(() => {});
-				return () => {
-					disposed = true;
-					source.close();
-				};
-			}, [sessionId]);
-
-			return h(TopicRail, {
-				t,
-				sessionId,
-				topics,
-				phase,
-				loadThrough: typeof loadThrough === "function" ? (seq) => loadThrough(sessionId, seq) : undefined,
-				onOpenPanel: openPanel,
-				hidden: sideCardOpen,
-			});
+		let railStyleReady = false;
+		function ensureRailStyle() {
+			if (railStyleReady) return;
+			if (document.getElementById("str-rail-style") !== null) { railStyleReady = true; return; }
+			const el = document.createElement("style");
+			el.id = "str-rail-style";
+			el.textContent = CSS;
+			document.head.appendChild(el);
+			railStyleReady = true;
 		}
 
-		// ---------- topic rail ----------
+		// ---------- topic rail (self-owned DOM edition) ----------
 		//
-		// A slim always-on rail on the right edge of the transcript, mirroring the
-		// shell's own turn navigator (`TurnNavigator` in dsh-client-ui-chat): one
-		// short mark per topic, a hover/focus preview card that opens to the left,
-		// and click-to-jump. It is deliberately NOT the side card: the rail shows
-		// where you are, the side card shows what each topic said. They are
-		// mutually exclusive — whichever opens hides the other.
+		// A slim always-on rail on the right edge of the transcript, mirroring
+		// the shell's own turn navigator (TurnNavigator in dsh-client-ui-chat):
+		// one short mark per topic, hover text, click-to-jump.
+		//
+		// It used to mount per visible turn through the conversation.chat.turnTail
+		// slot, but the chat virtualiser tears those rows down aggressively
+		// (rail-mount logs: three portals created at boot, all deleted within
+		// 50 ms, never recreated). The native navigator survives that rhythm only
+		// because the HOST re-renders it inside every recycled row. The rail now
+		// owns a fixed div on document.body and keeps itself alive with its own
+		// keepalive loop: no slot lifecycle, no React mount, nothing the
+		// virtualiser can unmount. Rows are plain DOM styled by the same .str-*
+		// rules the stylesheet block already defines.
 
-		const RAIL_MARK_PX = 10; // mark slot height, same rhythm as the native rail
-		const RAIL_INSET_PX = 6;
-		const RAIL_FADE_PX = 24;
-
-		/** Clip a string to `limit` characters, appending an ellipsis when it was cut. */
+		/** Clip a string to `limit` characters, appending an ellipsis when cut. */
 		function clip(text, limit) {
 			const value = String(text ?? "").replace(/\s+/g, " ").trim();
 			return value.length > limit ? `${value.slice(0, limit - 1).trimEnd()}…` : value;
 		}
 
-		function TopicRail({ t, sessionId, topics, phase, loadThrough, onOpenPanel, hidden }) {
-			const [previewId, setPreviewId] = useState(null);
-			const [activeId, setActiveId] = useState(null);
-			const scrollerRef = useRef(null);
+		const railDom = {
+			started: false,
+			frame: null,
+			list: null,
+			sessionId: undefined,
+			topics: [],
+			phase: "idle",
+			activeId: null,
+			hidden: false,
+			source: null,
+			keepalive: null,
+			measureFrame: null,
+			opts: null,
+			reappends: 0,
+			backRow: null,
+			surface: null,
+			panel: null,
+			expanded: false,
+			hoverTop: null,
+			sliceSize: 12,
+			jumping: false,
+			hoverAnchor: null,
+			pendingScrollTop: null,
+			pendingTimer: null,
+			visibleRows: 12,
+			windowStart: 0,
+			restamped: new Set(),
+		};
 
-			const items = useMemo(() => {
-				const list = Array.isArray(topics) ? topics : [];
-				return list.map((topic, index) => ({
-					topic,
-					index,
-					title: clip(topic.title, 24),
-					preview: clip(topic.summary || topic.title, 120),
-				}));
-			}, [topics]);
-
-			const busy = phase === "summarizing";
-			const total = items.length;
-
-			// Follow the transcript: the topic whose turn range covers the turn at the
-			// top of the viewport is "where you are".
-			useEffect(() => {
-				if (total === 0) return undefined;
-				let frame = null;
-				const measure = () => {
-					frame = null;
-					const scroller = chatScroller();
-					if (scroller === null) return;
-					const rows = scroller.querySelectorAll("[data-chat-turn]:not([hidden])");
-					const top = scroller.getBoundingClientRect().top;
-					let current = null;
-					for (const row of rows) {
-						if (row.getBoundingClientRect().bottom < top + 8) continue;
-						const value = Number(row.getAttribute("data-chat-turn"));
-						if (Number.isSafeInteger(value)) current = value;
-						break;
-					}
-					if (current === null) return;
-					let match = null;
-					for (const item of items) {
-						const start = item.topic.startTurn;
-						const span = Math.max(1, item.topic.turnCount || 1);
-						if (current >= start && current < start + span) {
-							match = item.topic.id;
-							break;
-						}
-						if (current >= start) match = item.topic.id;
-					}
-					setActiveId(match);
-				};
-				const onScroll = () => {
-					if (frame !== null) return;
-					frame = requestAnimationFrame(measure);
-				};
-				measure();
-				const scroller = chatScroller();
-				scroller?.addEventListener("scroll", onScroll, { passive: true });
-				window.addEventListener("resize", onScroll);
-				return () => {
-					if (frame !== null) cancelAnimationFrame(frame);
-					scroller?.removeEventListener("scroll", onScroll);
-					window.removeEventListener("resize", onScroll);
-				};
-			}, [items, total]);
-
-			// Keep the active mark inside the rail's scroll window.
-			useEffect(() => {
-				const scroller = scrollerRef.current;
-				if (scroller === null || activeId == null) return;
-				const index = items.findIndex((item) => item.topic.id === activeId);
-				if (index < 0) return;
-				const top = RAIL_INSET_PX + index * RAIL_MARK_PX;
-				const view = scroller.clientHeight;
-				if (view === 0) return;
-				if (top < scroller.scrollTop + RAIL_FADE_PX) {
-					scroller.scrollTo({ top: Math.max(0, top - RAIL_FADE_PX) });
-				} else if (top + RAIL_MARK_PX > scroller.scrollTop + view - RAIL_FADE_PX) {
-					scroller.scrollTo({ top: top + RAIL_MARK_PX - view + RAIL_FADE_PX });
-				}
-			}, [activeId, items]);
-
-			if (hidden || total === 0) return null;
-
-			const previewItem = previewId == null ? null : items.find((item) => item.topic.id === previewId);
-			const previewIndex = previewItem === undefined ? -1 : items.indexOf(previewItem);
-			const previewTop =
-				previewIndex < 0 ? 0 : RAIL_INSET_PX + previewIndex * RAIL_MARK_PX + RAIL_MARK_PX / 2;
-
-			return h(
-				"div",
-				{ className: "str-frame" },
-				previewItem ? (
-					h(
-						"div",
-						{ className: "str-preview", style: { top: `${previewTop}px` } },
-						h("div", { className: "str-previewTitle" }, previewItem.topic.title),
-						previewItem.topic.summary
-							? h("div", { className: "str-previewBody" }, previewItem.topic.summary)
-							: null,
-						h(
-							"div",
-							{ className: "str-previewMeta" },
-							`${t("topic.turnsPrefix")}${previewItem.topic.startTurn}–${previewItem.topic.startTurn + Math.max(1, previewItem.topic.turnCount || 1) - 1}`,
-						),
-					)
-				) : null,
-				h(
-					"div",
-					{ className: "str-scroller", ref: scrollerRef },
-					h(
-						"div",
-						{ className: "str-marks", style: { height: `${RAIL_INSET_PX * 2 + total * RAIL_MARK_PX}px` } },
-						items.map((item) =>
-							h(
-								"button",
-								{
-									key: item.topic.id,
-									type: "button",
-									className:
-										"str-mark" +
-										(item.topic.id === activeId ? " str-markActive" : "") +
-										(item.topic.id === previewId ? " str-markPreview" : "") +
-										(busy && item.index === total - 1 ? " str-markBusy" : ""),
-									style: { top: `${RAIL_INSET_PX + item.index * RAIL_MARK_PX}px` },
-									title: item.topic.title,
-									"aria-label": item.topic.title,
-									onPointerEnter: () => setPreviewId(item.topic.id),
-									onPointerLeave: () => setPreviewId(null),
-									onFocus: () => setPreviewId(item.topic.id),
-									onBlur: () => setPreviewId(null),
-									onClick: () => {
-										jumpToTopic(item.topic, loadThrough).catch(() => {});
-									},
-								},
-								h("span", { className: "str-bar" }),
-							),
-						),
-					),
-				),
-				h(
-					"button",
-					{
-						type: "button",
-						className: "str-open",
-						title: t("rail.openPanel"),
-						"aria-label": t("rail.openPanel"),
-						onClick: onOpenPanel,
-					},
-					IconTopics(14),
-				),
-			);
+		/** How many topic rows the collapsed capsule shows at once. */
+		function railVisibleRows() {
+			const raw = railDom.list === null ? "" : getComputedStyle(railDom.list).getPropertyValue("--str-visible-rows");
+			const parsed = Number.parseInt(raw, 10);
+			if (Number.isFinite(parsed) && parsed > 2) return parsed;
+			// Fallback: fit the window into the viewport at 20px a row.
+			return Math.max(6, Math.min(20, Math.floor((window.innerHeight * 0.62) / 20)));
 		}
 
+		/**
+		 * Attribute-selector escaping without CSS.escape: the DSH renderer
+		 * environment shadows the global `CSS` object, so `CSS.escape` is not
+		 * guaranteed to exist and used to throw inside railOpen.
+		 */
+		function railCssEscape(value) {
+			if (typeof CSS !== "undefined" && typeof CSS?.escape === "function") return CSS.escape(value);
+			return String(value).replace(/["\\]/g, "\\$&");
+		}
+
+		function railRows() {
+			return Array.isArray(railDom.topics) ? railDom.topics : [];
+		}
+
+		/** loadThrough bound to the rail's current session, jumpToTopic-shaped. */
+		function railBindLoadThrough() {
+			const opts = railDom.opts;
+			const sessionId = railDom.sessionId;
+			if (opts === null || typeof opts.loadThrough !== "function" || sessionId == null) return undefined;
+			return (seq) => opts.loadThrough(sessionId, seq);
+		}
+
+		/** (Re)build the rail rows from the current topic list. */
+		function railRender(anchorId) {
+			if (!railDom.started || railDom.frame === null) return;
+			ensureRailStyle();
+			const rows = railRows();
+			// Single authority for the frame's visibility: the hidden flag set by
+			// syncHidden. Anything that re-renders (measure, keepalive, session
+			// switch) must not resurrect a rail the user switched off.
+			railDom.frame.style.display = railDom.hidden || rows.length === 0 ? "none" : "";
+			railDom.frame.style.pointerEvents = railDom.hidden ? "none" : "";
+			const list = railDom.list;
+			// Fixed-height window instead of a long scrolling ribbon: only the
+			// rows around the active topic are built, so 50 topics still cost
+			// 12 rows of DOM and the capsule keeps one stable height.
+			const maxRows = railVisibleRows();
+			const windowSize = Math.min(maxRows, rows.length);
+			railDom.visibleRows = windowSize;
+			// Rows actually attached to the DOM: enough for the expanded window,
+			// anchored so both the ACTIVE row and the hovered row are inside.
+			const sliceSize = Math.min(rows.length, Math.max(windowSize, Math.min(railExpandRows(), rows.length)));
+			// While the capsule is open the expanded window is the readable one,
+			// so grow the slice to the full expanded capacity.
+			const sliceTarget = railDom.expanded ? Math.min(rows.length, railExpandRows()) : sliceSize;
+			// Row count drives the height (CSS: 20px × --str-visible-rows), so a
+			// 3-topic session gets a 3-row tick strip instead of a 12-row hole.
+			list.style.setProperty("--str-visible-rows", String(Math.max(1, windowSize)));
+			// Expanded height = rows × 38px, computed here so the CSS transition
+			// has a concrete target and nothing is clipped mid-row.
+			// workbuddy window model: the COLLAPSED strip only ever renders a
+			// short slice, but the EXPANDED window can hold railExpandRows()
+			// rows and must reach far enough back/forward to contain whatever
+			// row the user hovers or scrolls to. So the rendered slice size is
+			// the expanded capacity, and the CSS height (20px × visible rows)
+			// is what actually hides the rest while collapsed.
+			const expandCap = Math.min(railExpandRows(), Math.max(3, rows.length));
+			railDom.frame?.style.setProperty("--str-expanded-rows", String(Math.max(3, expandCap)));
+
+			// Like workbuddy: the window shows a slice of rows and the box height
+			// is that slice × row height, so nothing is ever clipped mid-row.
+			railDom.visibleRows = windowSize;
+			const followActive = anchorId === undefined;
+			const wanted = anchorId ?? railDom.activeId;
+			// The window size follows the open/closed state: collapsed shows the
+			// compact slice, expanded grows to railExpandRows().
+			const wantedIndex = rows.findIndex((topic, index) => String(topic.id ?? index) === String(wanted ?? ""));
+			const activeIndexForView = rows.findIndex(
+				(topic, index) => String(topic.id ?? index) === String(railDom.activeId ?? ""),
+			);
+			// Window stability: once a slice exists that already contains the row
+			// the capsule is read against (the ACTIVE one), keep it. Re-centring
+			// on every render is what used to make the active tick jump out of
+			// view on every re-hover.
+			const currentStart = railDom.windowStart ?? 0;
+			const currentSlice = railDom.sliceSize ?? sliceTarget;
+			const stableStart = Math.max(0, Math.min(currentStart, Math.max(0, rows.length - sliceTarget)));
+			const insideCurrent = (index) => index >= stableStart && index < stableStart + currentSlice;
+			const readable = activeIndexForView >= 0 ? activeIndexForView : wantedIndex;
+			let anchor = wantedIndex;
+			if (anchor < 0) anchor = followActive ? rows.length - 1 : Math.floor(sliceTarget / 2);
+			if (readable >= 0 && insideCurrent(readable)) {
+				anchor = readable;
+			} else if (followActive || activeIndexForView < 0) {
+				anchor = readable >= 0 ? readable : anchor;
+			}
+			// When the user hovers a row far from the active one, the window has
+			// to cover BOTH, otherwise opening on a row that is outside the
+			// active slice can never show the active tick at the same time.
+			if (!followActive && wantedIndex >= 0 && activeIndexForView >= 0 && wantedIndex !== activeIndexForView) {
+				const span = Math.abs(wantedIndex - activeIndexForView);
+				if (span >= sliceTarget && activeIndexForView < wantedIndex) anchor = wantedIndex;
+			}
+			let start = rows.length <= sliceTarget ? 0 : anchor - Math.floor(sliceTarget / 2);
+			start = Math.max(0, Math.min(start, Math.max(0, rows.length - sliceTarget)));
+			// Never let the ACTIVE row fall outside the slice it is read from.
+			if (activeIndexForView >= 0 && sliceTarget < rows.length) {
+				if (activeIndexForView < start) start = activeIndexForView;
+				else if (activeIndexForView >= start + sliceTarget) start = activeIndexForView - sliceTarget + 1;
+				start = Math.max(0, Math.min(start, Math.max(0, rows.length - sliceTarget)));
+			}
+			railDom.windowStart = start;
+			railDom.sliceSize = sliceTarget;
+			const slice = rows.slice(start, start + sliceTarget);
+			while (list.firstChild !== null) list.removeChild(list.firstChild);
+			for (let index = 0; index < slice.length; index += 1) {
+				const topic = slice[index];
+				const button = document.createElement("button");
+				button.type = "button";
+				button.className = "str-row";
+				button.dataset.topicId = String(topic.id ?? index);
+				button.setAttribute("aria-label", clip(topic.title, 60));
+				// Date column: a quiet grey stamp on the LEFT of the title, so the
+				// eye can scan "when" without reading the title itself. Rendered
+				// only when the host could resolve a real timestamp.
+				const when = railFormatWhen(topic.startedAt);
+				if (when !== "") {
+					const stamp = document.createElement("span");
+					stamp.className = "str-rowWhen";
+					stamp.textContent = when;
+					button.append(stamp);
+				}
+				const text = document.createElement("span");
+				text.className = "str-rowText";
+				text.textContent = clip(topic.title, 60);
+				const tick = document.createElement("span");
+				tick.className = "str-tick";
+				button.append(text, tick);
+				button.addEventListener("click", () => {
+					jumpToTopic(topic, railBindLoadThrough()).catch(() => {});
+				});
+				list.appendChild(button);
+			}
+
+			// "Back to latest" is pinned as the last row of the capsule: it is an
+			// action, not a topic, so it never follows the active tick around.
+			const back = railDom.backRow ?? document.createElement("button");
+			back.type = "button";
+			back.className = "str-row str-rowBack";
+			back.setAttribute("data-role", "back-to-latest");
+			const backLabel = typeof railDom.opts?.t === "function" ? railDom.opts.t("rail.backToLatest") : "回到最新";
+			back.setAttribute("aria-label", backLabel);
+			while (back.firstChild !== null) back.removeChild(back.firstChild);
+			const backText = document.createElement("span");
+			backText.className = "str-rowText";
+			backText.textContent = backLabel;
+			const backTick = document.createElement("span");
+			backTick.className = "str-tick";
+			back.append(backText, backTick);
+			if (!back.dataset.bound) {
+				back.dataset.bound = "1";
+				back.addEventListener("click", (event) => {
+					event.preventDefault();
+					event.stopPropagation();
+					void scrollToBottom();
+				});
+				// The list is re-rendered on topic updates, so a rebuilt row can
+				// swallow the click. stopPropagation keeps hover handlers from
+				// treating it as an anchor and pointerup re-fires the action.
+				back.addEventListener("pointerdown", (event) => event.stopPropagation());
+				back.addEventListener("pointerup", (event) => {
+					event.preventDefault();
+					event.stopPropagation();
+				});
+			}
+			railDom.backRow = back;
+			const stale = list.querySelector('[data-role="back-to-latest"]');
+			if (stale !== null && stale !== back) stale.remove();
+			list.appendChild(back);
+			railApplyState();
+			railScheduleMeasure();
+			if (!railDom.expanded) railPosition();
+		}
+
+
+		/**
+		 * Apply active/busy classes onto the already-built rows, keep the
+		 * "back to latest" row directly below the active one, and refresh the
+		 * hover-ripple delays so expansion always starts at the current
+		 * conversation's tick.
+		 */
+		/**
+		 * Compact local timestamp for a rail row.
+		 *
+		 * Today → `HH:MM`; this year → `MM-DD`; older → `YYYY-MM-DD`. The rail is
+		 * a glance surface, so the string stays short and only widens when the
+		 * extra digits actually disambiguate.
+		 */
+		function railFormatWhen(value) {
+			if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) return "";
+			const date = new Date(value);
+			if (Number.isNaN(date.getTime())) return "";
+			const now = new Date();
+			const pad = (n) => String(n).padStart(2, "0");
+			const sameDay =
+				date.getFullYear() === now.getFullYear() &&
+				date.getMonth() === now.getMonth() &&
+				date.getDate() === now.getDate();
+			// Date AND time: the rail is a map of a long conversation, so the day
+			// is what disambiguates topics far apart, and the clock still tells
+			// today's apart. Today drops the date because it adds nothing there.
+			const clock = `${pad(date.getHours())}:${pad(date.getMinutes())}`;
+			if (sameDay) return clock;
+			const day = `${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+			return date.getFullYear() === now.getFullYear() ? `${day} ${clock}` : `${date.getFullYear()}-${day}`;
+		}
+
+		/**
+		 * Publish the rail's on/off state to the document so the stylesheet can
+		 * suppress the host's native tick strip only while we are showing ours.
+		 * Switching the rail off therefore restores the native navigator instead
+		 * of leaving the edge empty.
+		 */
+		function railApplyNative() {
+			try {
+				const root = document.documentElement;
+				if (railDom.hidden) root.removeAttribute("data-str-rail-on");
+				else root.setAttribute("data-str-rail-on", "");
+			} catch { /* document not ready */ }
+		}
+
+		function railApplyState() {
+			const list = railDom.list;
+			if (list === null) return;
+			const busy = railDom.phase === "summarizing";
+			const activeKey = railDom.activeId == null ? null : String(railDom.activeId);
+			const rows = railRows();
+			const start = railDom.windowStart ?? 0;
+			const buttons = list.querySelectorAll(".str-row[data-topic-id]");
+			buttons.forEach((button, index) => {
+				const absolute = start + index;
+				const id = String(rows[absolute]?.id ?? absolute);
+				const isActive = id === activeKey;
+				button.classList.toggle("str-rowActive", isActive);
+				button.classList.toggle("str-rowBusy", busy && absolute === rows.length - 1);
+			});
+			const back = railDom.backRow;
+			if (back !== null && list.lastChild !== back) list.appendChild(back);
+		}
+
+		/** Which topic covers the turn at the top of the viewport. */
+		function railMeasure() {
+			railDom.measureFrame = null;
+			const scroller = chatScroller();
+			if (scroller === null) return;
+			const rows = scroller.querySelectorAll("[data-chat-turn]:not([hidden])");
+			const top = scroller.getBoundingClientRect().top;
+			const bottom = top + scroller.clientHeight;
+			let current = null;
+			for (const row of rows) {
+				const rect = row.getBoundingClientRect();
+				if (rect.top >= bottom) break;
+				if (rect.bottom <= top + 8) continue;
+				const value = Number(row.getAttribute("data-chat-turn"));
+				if (Number.isSafeInteger(value)) current = value;
+			}
+			if (current === null) return;
+			let match = null;
+			for (const topic of railRows()) {
+				const start = topic.startTurn;
+				const span = Math.max(1, topic.turnCount || 1);
+				if (current >= start && current < start + span) {
+					match = topic.id;
+					break;
+				}
+				if (current >= start) match = topic.id;
+			}
+			if (match === railDom.activeId) return;
+			railDom.activeId = match;
+			// The capsule shows a fixed window of rows around the active
+			// topic, so a new active row may fall outside it — rebuild.
+			const activeIndex = railRows().findIndex((topic, index) => String(topic.id ?? index) === String(match));
+			// Rebuild only when the new active row is outside the rendered slice;
+			// re-rendering on every scroll would reset the expanded scrollTop.
+			if (activeIndex >= 0 && railDom.windowStart != null && railDom.sliceSize != null) {
+				const start = railDom.windowStart;
+				const end = start + railDom.sliceSize;
+				if (activeIndex < start || activeIndex >= end) {
+					railRender();
+					return;
+				}
+			}
+			railApplyState();
+		}
+
+		function railScheduleMeasure() {
+			if (railDom.measureFrame !== null) return;
+			railDom.measureFrame = requestAnimationFrame(railMeasure);
+		}
+
+		function railSetTopics(topics, phase) {
+			railDom.topics = Array.isArray(topics) ? topics : [];
+			if (phase !== undefined) railDom.phase = phase;
+			// Topic lists written before timestamps existed carry no date column.
+			// Ask the Host once per session to fill them from the raw log; the
+			// reply arrives as a normal SSE topics broadcast.
+			if (railDom.topics.length > 0 && railDom.topics.some((topic) => topic.startedAt === undefined)) {
+				const sessionId = railDom.sessionId;
+				if (sessionId !== null && sessionId !== undefined) {
+					const key = String(sessionId);
+					if (!railDom.restamped.has(key)) {
+						railDom.restamped.add(key);
+						post("restamp", { sessionId }).catch(() => { /* best effort */ });
+					}
+				}
+			}
+			try {
+				post("rail-mount", { stage: "rail-topics", sessionId: railDom.sessionId ?? null, n: railDom.topics.length });
+			} catch { /* diagnostics only */ }
+			railRender();
+		}
+
+		/** Point the rail at a session: fresh SSE feed + initial fetch. */
+		function railSubscribe(sessionId) {
+			railDom.sessionId = sessionId;
+			railDom.topics = [];
+			railDom.activeId = null;
+			if (railDom.source !== null) {
+				railDom.source.close();
+				railDom.source = null;
+			}
+			railRender();
+			post("rail-mount", { stage: "rail-session", sessionId });
+			const source = new EventSource(`${ROUTE}events?sessionId=${encodeURIComponent(sessionId)}`);
+			source.onmessage = (event) => {
+				try {
+					const payload = JSON.parse(event.data);
+					if (payload.kind === "topics" && payload.sessionId === sessionId) {
+						railSetTopics(payload.topicList?.topics ?? []);
+					} else if (payload.kind === "status" && payload.sessionId === sessionId) {
+						railDom.phase = payload.status?.phase ?? "idle";
+						railApplyState();
+					}
+				} catch {
+					/* ignore malformed frames */
+				}
+			};
+			source.onerror = () => {
+				/* EventSource reconnects on its own */
+			};
+			railDom.source = source;
+			api(`topics?sessionId=${encodeURIComponent(sessionId)}`)
+				.then((data) => {
+					if (railDom.sessionId !== sessionId) return;
+					railSetTopics(data?.topicList?.topics ?? []);
+				})
+				.catch(() => {
+					/* rail stays empty until the SSE feed delivers */
+				});
+		}
+
+		function railSetSession(sessionId) {
+			if (sessionId == null || sessionId === railDom.sessionId) return;
+			railSubscribe(sessionId);
+		}
+
+		/**
+		 * Start the rail once: build the frame, wire listeners, keep it alive.
+		 * Called from apply(); session switches are pushed by the tool-row slot's
+		 * focusedSessionId and re-checked on every keepalive tick.
+		 */
+		let railDelayTimer = null;
+
+		/**
+		 * Vertically re-center the rail. Centring belongs to CSS (top:50% +
+		 * translateY(-50%)) so the tick column never drifts when a session
+		 * switches or the capsule collapses; this only clears a stale inline top
+		 * left behind by an older build.
+		 */
+		/**
+		 * Anchor the rail to the conversation pane's right edge, not the window's.
+		 *
+		 * The right sidebar (and its拆分 panels) shrink the conversation instead of
+		 * overlaying it, so a window-fixed strip would float on top of the sidebar
+		 * as soon as it opens. `--str-right` carries the measured gap between the
+		 * conversation pane and the window edge; with the sidebar closed it stays
+		 * at the 12px resting offset.
+		 */
+		function railPosition() {
+			const frame = railDom.frame;
+			if (frame === null) return;
+			frame.style.top = "";
+			frame.style.transform = "";
+			const scroller = typeof chatScroller === "function" ? chatScroller() : null;
+			let right = 12;
+			if (scroller !== null) {
+				try {
+					const rect = scroller.getBoundingClientRect();
+					if (rect.width > 0) right = Math.max(12, Math.round(window.innerWidth - rect.right) + 12);
+				} catch {
+					right = 12;
+				}
+			}
+			frame.style.setProperty("--str-right", right + "px");
+			if (frame.offsetHeight === 0 && railRows().length > 0 && !railDom.hidden) frame.style.display = "";
+		}
+
+
+		/** How many rows fit once expanded — 56vh of 38px rows, like workbuddy. */
+		function railExpandRows() {
+			const hoverRow = railHoverRowHeight();
+			const budget = Math.max(240, Math.round(window.innerHeight * 0.56) - railHoverChrome());
+			return Math.max(3, Math.floor(budget / hoverRow));
+		}
+	/** Topic id of the row under a viewport Y, if any. */
+		function railAnchorTopicIdAt(clientY) {
+			const list = railDom.list;
+			if (list === null) return null;
+			for (const row of list.children) {
+				const rect = row.getBoundingClientRect();
+				if (clientY < rect.top) break;
+				if (clientY < rect.bottom) return row.dataset?.topicId ?? null;
+			}
+			return null;
+		}
+
+		/** Row height while expanded — read from CSS so it can never drift. */
+		function railHoverRowHeight() {
+			const styles = railDom.list === null ? null : getComputedStyle(railDom.list);
+			const parsed = styles === null ? NaN : Number.parseFloat(styles.getPropertyValue("--str-row-hover"));
+			return Number.isFinite(parsed) && parsed > 0 ? parsed : 34;
+		}
+
+		/** Extra vertical chrome (list padding + border) gained on hover. */
+		function railHoverChrome() {
+			const styles = railDom.list === null ? null : getComputedStyle(railDom.list);
+			const parsed = styles === null ? NaN : Number.parseFloat(styles.getPropertyValue("--str-list-hover-pad"));
+			return Number.isFinite(parsed) && parsed >= 0 ? parsed : 6;
+		}
+
+		function railClearDelays() {
+			railDelayTimer = null;
+			if (railDom.list === null) return;
+			for (const child of railDom.list.children) {
+				child.style.transitionDelay = "";
+				for (const span of child.children) span.style.transitionDelay = "";
+			}
+		}
+
+		/**
+		 * Cursor-anchored expansion: the row under the mouse when it enters the
+		 * rail never moves — the frame top shifts up by exactly the growth of
+		 * the rows above it, and the ripple of delays starts at that row, so
+		 * nothing ever escapes the cursor.
+		 */
+		/**
+		 * Open the capsule — workbuddy's transaction, ported.
+		 *
+		 * The old implementation set scrollTop 560 ms after the animation, which
+		 * made the whole list visibly travel upwards and then settle back. The
+		 * correct order is the reverse: compute the target scrollTop with the
+		 * EXPANDED geometry, write it BEFORE the class lands (instantly, with the
+		 * transition suppressed), and let the height/width transition be the only
+		 * thing that animates. That is why workbuddy's rows never slide.
+		 */
+		function railOpen(anchorId) {
+			const frame = railDom.frame;
+			if (frame === null || railDom.expanded) return;
+			const target = anchorId ?? railDom.hoverAnchor ?? railDom.activeId;
+			railDom.expanded = true;
+			// 1. Grow the slice to the expanded capacity so the DOM already holds
+			//    every row the open window can show.
+			railRender(railDom.hoverAnchor ?? undefined);
+			// 2. Solve the scroll position against expanded geometry, then write it
+			//    in the SAME frame while the row transition is disabled.
+			const list = railDom.list;
+			if (list !== null) {
+				list.classList.add("str-jump");
+				const rowHover = railHoverRowHeight();
+				const domRows = Array.from(list.children).filter((child) => child.dataset?.topicId != null);
+				let index = domRows.findIndex((child) => child.dataset.topicId === String(target ?? ""));
+				if (index < 0) index = domRows.length - 1;
+				if (index >= 0) {
+					const paddingTop = Number.parseFloat(getComputedStyle(list).paddingTop) || 0;
+					const rowCenter = paddingTop + index * rowHover + rowHover / 2;
+					const expandedHeight = rowHover * railExpandRows() + 12;
+					const maxScroll = Math.max(0, list.scrollHeight - expandedHeight);
+					const centred = Math.max(0, Math.min(maxScroll, rowCenter - expandedHeight / 2));
+					list.scrollTop = centred;
+					try {
+						post("rail-mount", { stage: "rail-open", index, rowCenter, centred, maxScroll, expandedHeight, anchor: target ?? null });
+					} catch { /* diagnostics only */ }
+				}
+				// Re-enable transitions on the next frame so the height animation
+				// still runs while the scroll position is already final.
+				requestAnimationFrame(() => {
+					list.classList.remove("str-jump");
+					frame.classList.add("str-open");
+				});
+			} else {
+				frame.classList.add("str-open");
+			}
+		}
+
+		/** Close the capsule and put the rail back at its resting position. */
+				/** Close the capsule and put the rail back at its resting position. */
+		function railClose() {
+			if (railDom.frame === null) return;
+			railDom.expanded = false;
+			railDom.hoverTop = null;
+			railDom.hoverAnchor = null;
+			if (railDom.pendingTimer !== null) {
+				clearTimeout(railDom.pendingTimer);
+				railDom.pendingTimer = null;
+			}
+			railDom.pendingScrollTop = null;
+			// Collapse with the list pinned at the top of its window so the visible
+			// slice cannot slide while the height animates.
+			if (railDom.list !== null) {
+				railDom.list.classList.remove("str-jump");
+				railDom.list.style.removeProperty("--str-scroll-offset");
+				// Pin the collapsed strip to the top of its window: the slice is
+				// taller than the closed height, so a leftover scrollTop would show
+				// a middle slice and read as "content moved up".
+				railDom.list.scrollTop = 0;
+			}
+			railDom.frame.classList.remove("str-open");
+			railPosition();
+			railScheduleMeasure();
+		}
+
+
+		/** Scroll the expanded window so the focus row (anchor, else active) is
+		 *  visible and vertically centred — workbuddy centres it too. */
+		function railFocusActive(anchorId) {
+			const list = railDom.list;
+			if (list === null) return;
+			const wanted = anchorId ?? railDom.activeId;
+			if (wanted == null) return;
+			const row = list.querySelector(`[data-topic-id="${railCssEscape(String(wanted))}"]`);
+			if (row === null) return;
+			const top = row.offsetTop - list.offsetTop;
+			const maxScroll = Math.max(0, list.scrollHeight - list.clientHeight);
+			list.scrollTop = Math.max(0, Math.min(maxScroll, top - (list.clientHeight - row.offsetHeight) / 2));
+		}
+
+
+		/**
+		 * Hover intents, mirrored from workbuddy: 60 ms before opening, 180 ms
+		 * before closing, so a diagonal mouse path does not flash the capsule.
+		 * Both the frame and the list open it — the list is the node that always
+		 * sits under the cursor, even after the frame gets re-parented.
+		 */
+		function railBindHover() {
+			const frame = railDom.frame;
+			if (frame === null) return;
+			let openTimer = null;
+			let closeTimer = null;
+			const cancelOpen = () => {
+				if (openTimer !== null) clearTimeout(openTimer);
+				openTimer = null;
+			};
+			const cancelClose = () => {
+				if (closeTimer !== null) clearTimeout(closeTimer);
+				closeTimer = null;
+			};
+			const enter = (event) => {
+				railDom.lastPointerY = event.clientY;
+				railDom.hoverAnchor = railAnchorTopicIdAt(event.clientY);
+				cancelClose();
+				if (railDom.expanded || openTimer !== null) return;
+				openTimer = setTimeout(() => {
+					openTimer = null;
+					try {
+						railOpen(railAnchorTopicIdAt(railDom.lastPointerY ?? event.clientY));
+					} catch (error) {
+						try {
+							post("rail-mount", { stage: "hover-open-error", message: String(error && error.message ? error.message : error) });
+						} catch { /* diagnostics only */ }
+					}
+				}, 60);
+			};
+			frame.addEventListener("pointerenter", enter);
+			if (railDom.list !== null) railDom.list.addEventListener("pointerenter", enter);
+			frame.addEventListener("pointermove", (event) => {
+				railDom.lastPointerY = event.clientY;
+			});
+			const leave = () => {
+				cancelOpen();
+				if (!railDom.expanded || closeTimer !== null) return;
+				closeTimer = setTimeout(() => {
+					closeTimer = null;
+					railClose();
+				}, 180);
+			};
+			frame.addEventListener("pointerleave", leave);
+			if (railDom.list !== null) railDom.list.addEventListener("pointerleave", leave);
+			frame.addEventListener("keydown", (event) => {
+				if (event.key === "Escape") railClose();
+			});
+		}
+
+		function railStart(opts) {
+			if (railDom.started) return;
+			if (typeof window !== "undefined" && typeof window.__DSH_TOPIC_RAIL_STOP__ === "function") {
+				try {
+					window.__DSH_TOPIC_RAIL_STOP__();
+				} catch {}
+			}
+			railDom.started = true;
+			railDom.opts = opts;
+			const mount = () => {
+				if (document.body === null) {
+					setTimeout(mount, 300);
+					return;
+				}
+				ensureRailStyle();
+			// Structure mirrors workbuddy's conversation-history-navigation:
+			// panel-outer (fixed box) > surface (the frosted capsule, grown via
+			// inset()) + panel (clip-path window that slides open) > list.
+			const frame = document.createElement("div");
+			frame.className = "str-frame";
+			const surface = document.createElement("div");
+			surface.className = "str-surface";
+			const panel = document.createElement("div");
+			panel.className = "str-panel";
+			const list = document.createElement("div");
+			list.className = "str-list";
+			panel.appendChild(list);
+			frame.append(surface, panel);
+			railDom.surface = surface;
+			railDom.panel = panel;
+			document.body.appendChild(frame);
+			for (const other of document.querySelectorAll(".str-frame")) {
+				if (other !== frame) other.remove();
+			}
+			railDom.frame = frame;
+				railDom.list = list;
+				railRender();
+				railSetSession(opts.currentSessionId?.());
+				railBindHover();
+				post("rail-mount", { stage: "rail-start", href: String(window.location?.href ?? "") });
+			};
+			mount();
+			document.addEventListener("scroll", railScheduleMeasure, { passive: true, capture: true });
+			window.addEventListener("resize", railScheduleMeasure);
+			window.addEventListener("resize", railPosition);
+			// One place decides the rail's visibility: the frame, the native-strip
+			// suppression flag and the open capsule all follow it.
+			const syncHidden = () => {
+				railDom.hidden = Boolean(opts.getHidden?.());
+				if (railDom.hidden && railDom.expanded) railClose();
+				railApplyNative();
+				railRender();
+				railPosition();
+				railDom.burstResync?.();
+			};
+			if (typeof opts.subscribeHidden === "function") {
+				opts.subscribeHidden(syncHidden);
+			}
+			railDom.syncHidden = syncHidden;
+			syncHidden();
+			railDom.keepalive = setInterval(() => {
+				if (railDom.frame !== null && !railDom.frame.isConnected) {
+					document.body.appendChild(railDom.frame);
+					railDom.reappends += 1;
+					post("rail-mount", { stage: "rail-keepalive", reappends: railDom.reappends });
+				}
+				if (railDom.frame !== null) {
+					for (const other of document.querySelectorAll(".str-frame")) {
+						if (other !== railDom.frame) other.remove();
+					}
+				}
+				if (document.getElementById("str-rail-style") === null) {
+					railStyleReady = false;
+					ensureRailStyle();
+				}
+				railSetSession(railDom.opts?.currentSessionId?.());
+				railMeasure();
+			}, 2000);
+			if (typeof window !== "undefined") window.__DSH_TOPIC_RAIL_STOP__ = railStop;
+		}
+
+		/**
+		 * Full teardown so a hot-reloaded module instance never leaks its rail
+		 * frame, style element, listeners, SSE stream or keepalive interval
+		 * (every reload used to leave one extra rail behind).
+		 */
+		function railStop() {
+			if (railDom.keepalive !== null) {
+				clearInterval(railDom.keepalive);
+				railDom.keepalive = null;
+			}
+			if (railDom.source !== null) {
+				railDom.source.close();
+				railDom.source = null;
+			}
+			document.removeEventListener("scroll", railScheduleMeasure, { capture: true });
+			window.removeEventListener("resize", railScheduleMeasure);
+			window.removeEventListener("resize", railPosition);
+			if (railDom.frame !== null) {
+				railDom.frame.remove();
+				railDom.frame = null;
+			}
+			if (railDom.pendingTimer !== null) {
+				clearTimeout(railDom.pendingTimer);
+				railDom.pendingTimer = null;
+			}
+			railDom.pendingScrollTop = null;
+			railDom.list = null;
+			railDom.backRow = null;
+			railDom.sessionId = null;
+			railDom.activeId = null;
+			railDom.started = false;
+			railStyleReady = false;
+			railDom.syncHidden = null;
+			try {
+				document.documentElement.removeAttribute("data-str-rail-on");
+			} catch { /* document torn down */ }
+			document.getElementById("str-rail-style")?.remove();
+			if (typeof window !== "undefined" && window.__DSH_TOPIC_RAIL_STOP__ === railStop) {
+				window.__DSH_TOPIC_RAIL_STOP__ = undefined;
+			}
+		}
+
+		// TEMP DIAGNOSTIC: component-independent sampler. Runs from apply() for
+		// 3 minutes, logging rail + DOM state every 2s. Remove once the fix is
+		// confirmed on a full restart.
+		let railSamplerStarted = false;
+		let inputLeftFired = false; // one-shot inputLeft render probe
+		function startRailSampler() {
+			if (railSamplerStarted) return;
+			railSamplerStarted = true;
+			let ticks = 0;
+			const timer = setInterval(() => {
+				ticks += 1;
+				try {
+					const native = document.querySelector("._4if9eW_frame");
+					post("rail-mount", {
+						stage: "sampler",
+						tick: ticks,
+						railAlive: railDom.frame === null ? null : railDom.frame.isConnected,
+						railHidden: railDom.hidden,
+						topics: railRows().length,
+						ourFrames: document.querySelectorAll(".str-frame").length,
+						styleEl: document.getElementById("str-rail-style") !== null,
+						nativeDisplay: native === null ? null : getComputedStyle(native).display,
+						turnTailEls: document.querySelectorAll("[data-turn-tail]").length,
+						chatTurns: document.querySelectorAll("[data-chat-turn]").length,
+						toolBtn: document.querySelectorAll("[data-session-topics-tool]").length,
+					});
+				} catch { /* diagnostics only */ }
+				if (ticks >= 90) clearInterval(timer);
+			}, 2000);
+		}
 		return {
 			inject: ["locale", "sessions", "uiWorkspace", "slots", "layout"],
 			apply(ctx) {
+				try {
+					fetch("/plugins/session-topics/rail-mount", {
+						method: "POST",
+						headers: { "Content-Type": "application/json" },
+						body: JSON.stringify({ stage: "apply", at: Date.now() }),
+					}).catch(() => {});
+				} catch { /* diagnostics only */ }
+				startRailSampler(); // TEMP DIAGNOSTIC: component-independent sampler
 				const t = ctx.locale.bind(NS);
 				ctx.effect(() => ctx.locale.register(NS, dictionaries), "session-topics: dictionaries");
 
@@ -1343,44 +2302,103 @@ window.__ModuleLoader__.load({
 					setOpenFlag(isTopicsTabOpen());
 				};
 
-				// The right-edge rail: mounted once per session view, hidden while the
-				// side card is open so the two entry points never fight for the edge.
-				ctx.slots.inject("conversation.view", () =>
-					ctx.slots.register(
-						{
-							name: "conversation.view",
-							id: "session-topics-rail",
-							order: 40,
-						},
-						(props) => {
-							const sid = props?.session?.sessionId ?? props?.sessionId ?? currentSessionId();
-							// A view slot renders inline in the transcript column, where an
-							// absolutely-positioned rail would land in the flow. Portal it into
-							// the scroll surface itself, which is the only positioned ancestor
-							// the native rail also uses.
-							return h(RailPortal, {
-								children: h(RailHost, {
-									t,
-									sessionId: sid,
-									loadThrough,
-									openPanel: () => {
-										const target = currentSessionId();
-										try {
-											betterSidebar?.openTab?.({ type: TOPICS_TYPE, reveal: true }, { sessionId: target });
-										} catch {
-											/* sidebar unavailable */
-										}
-										setOpenFlag(isTopicsTabOpen());
-									},
-									useOpenFlag,
-								}),
-							});
-						},
-					),
-				);
 
-				ctx.slots.inject("conversation.input.left", () =>
-					ctx.slots.register(
+			// The right-edge rail: self-owned DOM, kept alive by its own loop (see
+			// the rail DOM section above). Hidden while the side card is open so
+			// the two entry points never fight for the edge.
+			// The side card can open/close by clicks inside the dock, not only
+			// through our button, so the rail keeps its own poll of the real dock
+			// layout: the moment our tab appears the rail yields the edge.
+			// Tracking the conversation pane's right edge.
+			//
+			// Polling harder would burn CPU: every tick reads a rect (forced
+			// layout) and calls tabsIn (allocates an array). Instead the watch is
+			// event-driven — ResizeObserver on the pane catches dock open/close
+			// and splitter drags with no timer at all — and the timer only runs
+			// as a short burst while the pane is animating, since a CSS transition
+			// moves the element without firing ResizeObserver on every frame.
+			let paneObserver = null;
+			let paneTarget = null;
+			const paneEdge = () => {
+				const scroller = typeof chatScroller === "function" ? chatScroller() : null;
+				const rect = scroller?.getBoundingClientRect?.();
+				if (rect === undefined) return null;
+				return Math.round(window.innerWidth - rect.right);
+			};
+			const resyncRail = () => {
+				try {
+					setOpenFlag(isTopicsTabOpen());
+				} catch { /* sidebar not ready */ }
+				const edge = paneEdge();
+				if (edge !== null) railPosition();
+			};
+			let burst = 0;
+			const burstTick = () => {
+				resyncRail();
+				if (burst > 0) {
+					burst -= 1;
+					requestAnimationFrame(burstTick);
+					return;
+				}
+				burstTimer = null;
+			};
+			let burstTimer = null;
+			const burstResync = () => {
+				burst = 24; // ~400ms of per-frame tracking, then idle
+				if (burstTimer === null) burstTimer = requestAnimationFrame(burstTick);
+			};
+			railDom.burstResync = burstResync;
+			try {
+				paneTarget = typeof chatScroller === "function" ? chatScroller() : null;
+				if (paneTarget !== null && typeof ResizeObserver === "function") {
+					paneObserver = new ResizeObserver(() => burstResync());
+					paneObserver.observe(paneTarget);
+				}
+			} catch { /* observer unavailable */ }
+			// Slow safety net for the cases ResizeObserver cannot see (the pane
+			// element being replaced on a session switch, tab list churn).
+			const openWatch = setInterval(resyncRail, 1000);
+			try {
+				ctx.effect(
+					() => () => {
+						clearInterval(openWatch);
+						if (burstTimer !== null) cancelAnimationFrame(burstTimer);
+						burstTimer = null;
+						paneObserver?.disconnect?.();
+						paneObserver = null;
+						railDom.burstResync = null;
+					},
+					"session-topics: rail edge watch",
+				);
+			} catch {
+				/* effect unavailable in this shell */
+			}
+
+			railStart({
+				t,
+				loadThrough,
+				// Hidden while the side card is open (the two entry points never
+				// fight for the edge) or when the user switched the rail off.
+				getHidden: () => openValue || prefsState.value.enableRail === false,
+				subscribeHidden: (listener) => {
+					openListeners.add(listener);
+					const off = prefsStore.subscribe(listener);
+					return () => {
+						openListeners.delete(listener);
+						off();
+					};
+				},
+				currentSessionId,
+			});
+			// Seed the switches from the Host and keep the sections live.
+			refreshPrefs();
+			try {
+				ctx.effect(() => () => railStop());
+			} catch {}
+
+				ctx.slots.inject("conversation.input.left", () => {
+					post("rail-mount", { stage: "lifecycle", slot: "inputLeft", op: "inject-callback" });
+					const inner = ctx.slots.register(
 						{
 							name: "conversation.input.left",
 							id: "session-topics",
@@ -1388,11 +2406,52 @@ window.__ModuleLoader__.load({
 						},
 						(props) => {
 							const sid = props?.session?.sessionId ?? props?.sessionId;
-							if (sid != null) focusedSessionId = sid;
+
+							if (sid != null) {
+								focusedSessionId = sid;
+								railSetSession(sid);
+							}
+							if (!inputLeftFired) {
+								inputLeftFired = true;
+								try {
+									post("rail-mount", { stage: "inputleft-render", sid: sid ?? null, at: Date.now() });
+								} catch { /* diagnostics only */ }
+							}
+							// The sidebar entry point is switchable: the slot stays
+							// registered and simply renders nothing when it is off,
+							// which keeps the ledger stable across toggles.
+							if (usePrefs().enableSidebar === false) return null;
 							return h(ToolRowEntry, { t, toggle: toggleTopics, useOpenFlag });
 						},
-					),
-				);
+					);
+					return () => {
+						post("rail-mount", { stage: "lifecycle", slot: "inputLeft", op: "entry-dispose" });
+						try { inner(); } catch { /* diagnostics only */ }
+					};
+				});
+
+				// The "Session topics" settings pane, registered through the same
+				// section slot the shell uses for its own built-in plugin pages.
+				try {
+					ctx.slots.inject("settings.section", () =>
+						ctx.slots.register(
+							{
+								name: "settings.section",
+								id: "session-topics",
+								order: 60,
+								label: () => t("settings.title"),
+								// Same glyph as the composer button, so the settings
+								// section and the sidebar entry point read as one
+								// feature instead of a stray gear.
+								icon: (size) => IconTopics(size),
+								locale: NS,
+							},
+							() => h(SessionTopicsSection, { t }),
+						),
+					);
+				} catch (error) {
+					post("rail-mount", { stage: "settings-section-error", message: String(error && error.message ? error.message : error) });
+				}
 
 				if (betterSidebar === undefined) {
 					// No sidebar service: the tool-row button above is the only entry and
@@ -1414,9 +2473,15 @@ window.__ModuleLoader__.load({
 					/* subscription is best-effort */
 				}
 
-				ctx.effect(
-					() =>
-						betterSidebar.registerTab({
+				// The sidebar tab is registered only while the switch is on, so
+				// Better Sidebar's own tab list (and its settings) never shows a
+				// tab the user turned off. Toggling re-registers through the same
+				// effect lifetime.
+				let disposeTab = null;
+				const syncTab = () => {
+					const wanted = prefsState.value.enableSidebar !== false;
+					if (wanted && disposeTab === null) {
+						disposeTab = betterSidebar.registerTab({
 							id: "session-topics",
 							title: () => t("tab.title"),
 							description: () => t("tab.description"),
@@ -1430,7 +2495,40 @@ window.__ModuleLoader__.load({
 									loadThrough: (seq) => loadThrough(scope.sessionId, seq),
 									openSessionAt,
 								}),
-						}),
+						});
+						return;
+					}
+					if (!wanted && disposeTab !== null) {
+						try {
+							disposeTab();
+						} catch {
+							/* already disposed */
+						}
+						disposeTab = null;
+						setOpenFlag(false);
+						try {
+							betterSidebar.closeTab?.("session-topics");
+						} catch {
+							/* nothing open */
+						}
+					}
+				};
+				ctx.effect(
+					() => {
+						syncTab();
+						const off = prefsStore.subscribe(syncTab);
+						return () => {
+							off();
+							if (disposeTab !== null) {
+								try {
+									disposeTab();
+								} catch {
+									/* already disposed */
+								}
+								disposeTab = null;
+							}
+						};
+					},
 					"session-topics: better-sidebar tab",
 				);
 			},

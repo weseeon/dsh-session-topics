@@ -53,6 +53,9 @@ function validateTopic(value) {
 	if (!isNonNegativeInteger(value.updatedAt) && value.updatedAt !== undefined) {
 		return { ok: false, message: "topic.updatedAt must be a non-negative integer" };
 	}
+	if (!isNonNegativeInteger(value.startedAt) && value.startedAt !== undefined) {
+		return { ok: false, message: "topic.startedAt must be a non-negative integer" };
+	}
 	return { ok: true };
 }
 
@@ -123,6 +126,8 @@ function normalizeConfig(raw) {
 	};
 	return {
 		summarizer: { provider, model },
+		enableRail: value.enableRail !== false,
+		enableSidebar: value.enableSidebar !== false,
 		autoUpdate: value.autoUpdate !== false,
 		maxTopics: clamp(value.maxTopics, 3, 100, 20),
 		assistantExcerptChars: clamp(value.assistantExcerptChars, 100, 8000, 500),
@@ -133,7 +138,7 @@ function normalizeConfig(raw) {
 	};
 }
 
-export const inject = ["sessionQuery", "llm", "storageDomain", "webServer"];
+export const inject = ["sessionQuery", "llm", "storageDomain", "webServer", "connection"];
 
 export function apply(ctx, rawConfig) {
 	const config = normalizeConfig(rawConfig);
@@ -215,6 +220,31 @@ export function apply(ctx, rawConfig) {
 		return config.summarizer;
 	}
 
+	/**
+	 * Effective settings for the settings pane: manifest/patch defaults, then
+	 * whatever the user stored through config-patch, then the summarizer route.
+	 */
+	function effectiveSettings() {
+		let stored;
+		try {
+			stored = configTable?.get("settings");
+		} catch {
+			stored = undefined;
+		}
+		const merged = normalizeConfig({ ...config, ...(typeof stored === "object" && stored !== null ? stored : {}) });
+		return {
+			enableRail: merged.enableRail,
+			enableSidebar: merged.enableSidebar,
+			maxTopics: merged.maxTopics,
+			initBackfillCount: merged.initBackfillCount,
+			assistantExcerptChars: merged.assistantExcerptChars,
+			searchResultLimit: merged.searchResultLimit,
+			semanticCandidateLimit: merged.semanticCandidateLimit,
+			language: merged.language,
+			summarizer: effectiveSummarizer(),
+		};
+	}
+
 	async function callSummarizer(systemText, userText) {
 		const aggregator = createStreamAggregator();
 		const route = effectiveSummarizer();
@@ -253,6 +283,20 @@ export function apply(ctx, rawConfig) {
 			.join("\n");
 	}
 
+	/** Epoch milliseconds of a session event, from whichever field the log carries. */
+	function eventAt(event) {
+		for (const candidate of [event?.time, event?.timestamp, event?.createdAt, event?.data?.time, event?.data?.timestamp, event?.data?.createdAt]) {
+			if (typeof candidate === "number" && Number.isFinite(candidate) && candidate > 0) {
+				return candidate > 1e12 ? Math.round(candidate) : Math.round(candidate * 1000);
+			}
+			if (typeof candidate === "string") {
+				const parsed = Date.parse(candidate);
+				if (Number.isFinite(parsed) && parsed > 0) return parsed;
+			}
+		}
+		return undefined;
+	}
+
 	async function collectExcerpt(sessionId, fromSeq) {
 		const snapshot = await ctx.sessionQuery.readSession(sessionId);
 		const events = Array.isArray(snapshot?.events) ? snapshot.events : [];
@@ -276,6 +320,10 @@ export function apply(ctx, rawConfig) {
 					userText: textOf(event.data),
 					assistantText: "",
 					tools: [],
+					// First-seen timestamp for this exchange: the authoritative
+					// clock for "when did this topic start", independent of the
+					// model's own (untrusted) numbers.
+					at: eventAt(event),
 				};
 			} else if (event.type === "assistant/message" && pending !== null) {
 				if (pending.assistantText.length < config.assistantExcerptChars) {
@@ -299,7 +347,13 @@ export function apply(ctx, rawConfig) {
 				turns[index].assistantText = turns[index].assistantText.slice(0, COLD_START_SHORT_CHARS);
 			}
 		}
-		return { turns, lastSeq };
+		// Every exchange's clock, not only the ones in this excerpt: an existing
+		// topic list created before timestamps existed still needs its times
+		// backfilled, and its exchanges are by definition not new ones.
+		const allTimes = turns
+			.filter((turn) => turn.at !== undefined)
+			.map((turn) => ({ seq: turn.startSeq, turn: turn.turn, at: turn.at }));
+		return { turns, lastSeq, allTimes };
 	}
 
 	// ---------- prompts ----------
@@ -322,6 +376,7 @@ export function apply(ctx, rawConfig) {
 			`- title: at most 20 characters, in ${languageInstruction()}.`,
 			`- summary: one or two sentences, at most 80 characters, in ${languageInstruction()}.`,
 			"- Copy startSeq, endSeq and startTurn from the input markers; never invent or shift them.",
+			"- Timestamps in the input markers are reference only; the host stamps times itself.",
 			"- turnCount: how many user turns the topic covers.",
 			`- Keep at most ${config.maxTopics} topics; drop the oldest closed ones first.`,
 			'Output ONLY valid JSON of shape {"topics":[{"id":"","title":"","summary":"","startSeq":0,"endSeq":0,"startTurn":0,"turnCount":0,"status":"active|closed","updatedAt":0}]} — no markdown fences, no commentary.',
@@ -332,7 +387,7 @@ export function apply(ctx, rawConfig) {
 		const lines = turns.map((turn) => {
 			const tools = turn.tools.length > 0 ? ` [tools: ${turn.tools.join(", ")}]` : "";
 			return [
-				`[turn ${turn.turn}, seq ${turn.startSeq}] USER: ${turn.userText}`,
+				`[turn ${turn.turn}, seq ${turn.startSeq}${turn.at !== undefined ? `, at ${new Date(turn.at).toISOString()}` : ""}] USER: ${turn.userText}`,
 				`[turn ${turn.turn}] ASSISTANT${tools}: ${turn.assistantText}`,
 			].join("\n");
 		});
@@ -430,7 +485,7 @@ export function apply(ctx, rawConfig) {
 	 * from the previous list keeps its old stamp; changed or new topics get
 	 * `now`. The model's own timestamps are never trusted.
 	 */
-	function stampTopics(newTopics, oldTopics, now) {
+	function stampTopics(newTopics, oldTopics, now, turnTimes) {
 		const oldById = new Map(oldTopics.map((topic) => [topic.id, topic]));
 		return newTopics.map((topic) => {
 			const old = oldById.get(topic.id);
@@ -441,8 +496,40 @@ export function apply(ctx, rawConfig) {
 				old.endSeq === topic.endSeq &&
 				old.turnCount === topic.turnCount &&
 				old.status === topic.status;
-			return { ...topic, updatedAt: unchanged ? old.updatedAt : now };
+			// startedAt = the wall clock of the exchange the topic began at. It
+			// never moves once known: a topic that grows keeps its first stamp,
+			// which is exactly what the rail's date column should show.
+			let startedAt = old?.startedAt;
+			const endTurn = topic.startTurn + Math.max(0, (topic.turnCount ?? 1) - 1);
+			const fromTurns = earliestTurnTime(turnTimes, topic.startTurn, endTurn, topic.endSeq);
+			if (startedAt === undefined && fromTurns !== undefined) startedAt = fromTurns;
+			return { ...topic, updatedAt: unchanged ? old.updatedAt : now, startedAt };
 		});
+	}
+
+	/**
+	 * Earliest timestamp among the exchanges that belong to a topic.
+	 *
+	 * `turnTimes` maps sequence numbers to wall clocks collected while reading
+	 * the session log. The topic's own `endSeq` bounds the walk so a topic can
+	 * only take times from exchanges it actually covers, and `startTurn` lets a
+	 * topic that begins mid-window still claim its own first exchange.
+	 */
+	function earliestTurnTime(turnTimes, startTurn, endTurn, endSeq) {
+		if (!Array.isArray(turnTimes) || turnTimes.length === 0) return undefined;
+		let best;
+		let fallback;
+		for (const entry of turnTimes) {
+			if (Number.isSafeInteger(endSeq) && entry.seq > endSeq) continue;
+			if (fallback === undefined || entry.at < fallback) fallback = entry.at;
+			if (Number.isSafeInteger(startTurn) && entry.turn < startTurn) continue;
+			if (Number.isSafeInteger(endTurn) && entry.turn > endTurn) continue;
+			if (best === undefined || entry.at < best) best = entry.at;
+		}
+		// The model's startTurn can drift by a turn or two; when its window holds
+		// no exchange at all, the earliest exchange up to endSeq is still a far
+		// better answer than "no date".
+		return best ?? fallback;
 	}
 
 	// ---------- summarize task ----------
@@ -450,8 +537,17 @@ export function apply(ctx, rawConfig) {
 	async function summarizeSession(sessionId, full) {
 		let current = cachedList(sessionId);
 		if (full || current === undefined) current = { version: 1, summarizedThrough: 0, topics: [] };
-		const { turns, lastSeq } = await collectExcerpt(sessionId, current.summarizedThrough);
+		const { turns, lastSeq, allTimes } = await collectExcerpt(sessionId, current.summarizedThrough);
 		if (turns.length === 0) {
+			// Nothing new, but an older topic list may predate timestamps: fill
+			// what we can from the exchanges it covers, then persist once.
+			const needsTime = current.topics.some((topic) => topic.startedAt === undefined);
+			if (needsTime) {
+				const backfilled = stampTopics(current.topics, current.topics, Date.now(), allTimes);
+				await table.put(sessionId, { ...current, topics: backfilled });
+				broadcast({ kind: "topics", sessionId, topicList: { ...current, topics: backfilled } }, sessionId);
+				return;
+			}
 			if (lastSeq > current.summarizedThrough) {
 				await table.put(sessionId, { ...current, summarizedThrough: lastSeq });
 			}
@@ -471,7 +567,7 @@ export function apply(ctx, rawConfig) {
 			);
 			topics = parseTopics(raw, lastSeq);
 		}
-		const stamped = stampTopics(topics, current.topics, Date.now());
+		const stamped = stampTopics(topics, current.topics, Date.now(), allTimes);
 		const next = { version: 1, summarizedThrough: lastSeq, topics: stamped };
 		await table.put(sessionId, next);
 		broadcast({ kind: "topics", sessionId, topicList: next }, sessionId);
@@ -651,7 +747,27 @@ export function apply(ctx, rawConfig) {
 		res.end(text);
 	}
 
+	/**
+	 * Apply DSH's own Host/Origin + browser-auth checks to this route.
+	 *
+	 * Without this, any web page open in the user's browser can call
+	 * `/plugins/session-topics/*` cross-origin or from a same-site tab and read
+	 * the topic list. `connection` is a core service; its reject verdict (401 or
+	 * 403) is written straight back, and an absent service (older shells) leaves
+	 * the route as it was.
+	 */
+	function rejectRequest(req, res) {
+		const connection = Reflect.get(ctx, "connection");
+		if (connection === undefined || typeof connection.requestRejection !== "function") return false;
+		const rejection = connection.requestRejection(req);
+		if (rejection === undefined) return false;
+		res.statusCode = rejection;
+		res.end();
+		return true;
+	}
+
 	async function handle(req, res) {
+		if (rejectRequest(req, res)) return;
 		const url = new URL(req.url ?? "/", "http://local");
 		const path = url.pathname
 			.replace(/^\/plugins\/session-topics\/?/, "")
@@ -734,6 +850,24 @@ export function apply(ctx, rawConfig) {
 				});
 				return;
 			}
+			if (method === "POST" && path === "rail-mount") {
+				const body = await readBody(req);
+				const fs = globalThis.process?.getBuiltinModule?.("node:fs");
+				const path = globalThis.process?.getBuiltinModule?.("node:path");
+				const os = globalThis.process?.getBuiltinModule?.("node:os");
+				if (fs !== undefined && path !== undefined && os !== undefined) {
+					try {
+						fs.appendFileSync(
+							path.join(os.tmpdir(), "dsh-session-topics-rail.log"),
+							`${new Date().toISOString()} ${JSON.stringify(body)}\n`,
+						);
+					} catch {
+						/* diagnostics only */
+					}
+				}
+				jsonReply(res, 200, { ok: true });
+				return;
+			}
 			if (method === "POST" && path === "diagnostic") {
 				const body = await readBody(req);
 				const fs = globalThis.process?.getBuiltinModule?.("node:fs");
@@ -773,7 +907,7 @@ export function apply(ctx, rawConfig) {
 				return;
 			}
 			if (method === "GET" && path === "config") {
-				jsonReply(res, 200, { summarizer: effectiveSummarizer() });
+				jsonReply(res, 200, effectiveSettings());
 				return;
 			}
 			if (method === "POST" && path === "config") {
@@ -789,6 +923,73 @@ export function apply(ctx, rawConfig) {
 				await configTable.put("summarizer", candidate);
 				broadcast({ kind: "config", summarizer: effectiveSummarizer() }, "*");
 				jsonReply(res, 200, { ok: true, summarizer: effectiveSummarizer() });
+				return;
+			}
+			if (method === "POST" && path === "config-patch") {
+				// Partial update from the settings pane: only the fields present in
+				// the body change, everything else keeps the values the user already
+				// had (configTable overrides on top of the manifest defaults).
+				const body = await readBody(req);
+				const next = { ...effectiveSettings() };
+				if (typeof body.enableRail === "boolean") next.enableRail = body.enableRail;
+				if (typeof body.enableSidebar === "boolean") next.enableSidebar = body.enableSidebar;
+				if (body.maxTopics !== undefined) next.maxTopics = Number(body.maxTopics);
+				if (body.initBackfillCount !== undefined) next.initBackfillCount = Number(body.initBackfillCount);
+				if (body.assistantExcerptChars !== undefined) next.assistantExcerptChars = Number(body.assistantExcerptChars);
+				if (body.searchResultLimit !== undefined) next.searchResultLimit = Number(body.searchResultLimit);
+				if (body.semanticCandidateLimit !== undefined) next.semanticCandidateLimit = Number(body.semanticCandidateLimit);
+				if (typeof body.language === "string") next.language = body.language;
+				if (body.summarizer !== undefined) {
+					const candidate = {
+						provider: typeof body.summarizer?.provider === "string" ? body.summarizer.provider.trim() : "",
+						model: typeof body.summarizer?.model === "string" ? body.summarizer.model.trim() : "",
+					};
+					if (!SummarizerConfigSchema.safeParse(candidate).success) {
+						jsonReply(res, 400, { error: "provider and model must be non-empty strings" });
+						return;
+					}
+					next.summarizer = candidate;
+				}
+				const normalized = normalizeConfig(next);
+				await configTable.put("settings", {
+					enableRail: normalized.enableRail,
+					enableSidebar: normalized.enableSidebar,
+					maxTopics: normalized.maxTopics,
+					initBackfillCount: normalized.initBackfillCount,
+					assistantExcerptChars: normalized.assistantExcerptChars,
+					searchResultLimit: normalized.searchResultLimit,
+					semanticCandidateLimit: normalized.semanticCandidateLimit,
+					language: normalized.language,
+				});
+				await configTable.put("summarizer", normalized.summarizer);
+				broadcast({ kind: "config", settings: effectiveSettings() }, "*");
+				jsonReply(res, 200, effectiveSettings());
+				return;
+			}
+			if (method === "POST" && path === "restamp") {
+				// One-shot repair for topic lists created before timestamps
+				// existed: walk the whole log and fill startedAt where missing,
+				// without spending a summarizer call or moving any other field.
+				const body = await readBody(req);
+				const sessionId = String(body.sessionId ?? "");
+				if (sessionId.length === 0) {
+					jsonReply(res, 400, { error: "sessionId required" });
+					return;
+				}
+				const current = cachedList(sessionId);
+				if (current === undefined) {
+					jsonReply(res, 200, { ok: true, filled: 0, total: 0 });
+					return;
+				}
+				const { allTimes } = await collectExcerpt(sessionId, -1);
+				const repaired = stampTopics(current.topics, current.topics, Date.now(), allTimes);
+				const filled = repaired.filter((topic, index) => topic.startedAt !== undefined && current.topics[index]?.startedAt === undefined).length;
+				if (filled > 0) {
+					const next = { ...current, topics: repaired };
+					await table.put(sessionId, next);
+					broadcast({ kind: "topics", sessionId, topicList: next }, sessionId);
+				}
+				jsonReply(res, 200, { ok: true, filled, total: repaired.length });
 				return;
 			}
 			if (method === "GET" && path === "backfill") {
